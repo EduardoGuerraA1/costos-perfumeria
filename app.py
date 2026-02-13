@@ -2,28 +2,45 @@ import streamlit as st
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import create_engine, text
+import urllib.parse  # Importante para codificar la contraseña
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="ERP Perfumería - Nube Supabase", layout="wide")
 
 # ==============================================================================
-# 🔐 CONEXIÓN A BASE DE DATOS (SUPABASE / POSTGRESQL)
+# 🔐 CONEXIÓN A BASE DE DATOS BLINDADA (SUPABASE)
 # ==============================================================================
-# REEMPLAZA ESTO CON TU URL DE SUPABASE (La que copiaste en el paso 1)
-# Ejemplo: "postgresql://postgres.user:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
-DB_URL = "postgresql://postgres:.pJUb+(3pnYqBH1yhM@db.nzlysybivtiumentgpvi.supabase.co:5432/postgres"
+
+# 1. TUS DATOS (Los que me acabas de dar)
+DB_HOST = "db.nzlysybivtiumentgpvi.supabase.co"
+DB_NAME = "postgres"
+DB_USER = "postgres"
+DB_PORT = "6543"  # <--- CAMBIO CLAVE: Usamos 6543 en lugar de 5432
+DB_PASS = ".pJUb+(3pnYqBH1yhM"  # <--- ESCRIBE AQUÍ TU CONTRASEÑA
+
+# 2. CREACIÓN DE LA URL DE CONEXIÓN
+# Esto arregla problemas si tu contraseña tiene '@', ':', '/' u otros símbolos
+encoded_password = urllib.parse.quote_plus(DB_PASS)
+
+# Construimos el enlace final
+# Usamos 'postgresql+psycopg2' para ser específicos con el driver
+DB_URL = f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DB_URL)
+    # Creamos el motor de conexión
+    return create_engine(DB_URL, pool_pre_ping=True)
 
 try:
     engine = get_engine()
-    # Test simple de conexión
+    # Test rápido de conexión
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
+    # Si llegamos aquí, todo está bien. Puedes quitar este success luego.
+    st.success("✅ ¡Conectado a la Nube correctamente!") 
 except Exception as e:
-    st.error(f"❌ Error conectando a la base de datos. Verifica tu URL en el código.\nDetalle: {e}")
+    st.error("❌ No se pudo conectar. Revisa que la contraseña sea correcta.")
+    st.error(f"Detalle técnico: {e}")
     st.stop()
 
 # ==============================================================================
