@@ -1,397 +1,174 @@
-# ============================================
-# SISTEMA ERP DE COSTOS - PERFUMERÍA
-# Versión: 1.0
-# Autor: Asistente de Programación
-# ============================================
-
 import streamlit as st
 import pandas as pd
 import sqlite3
-import hashlib
-from datetime import datetime, timedelta
-import plotly.express as px
-import plotly.graph_objects as go
-import json
-import os
 
-# ============================================
-# CONFIGURACIÓN INICIAL
-# ============================================
-st.set_page_config(
-    page_title="ERP Costos | Perfumería",
-    page_icon="🧴",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Configuración de página
+st.set_page_config(page_title="ERP Costos Perfumería", layout="wide")
 
-# Constantes iniciales (después serán configurables)
-IVA = 12
-COSTO_MOD_MINUTO = 0.44
-COSTO_FIJO_UNITARIO = 2.38
-GASTO_OPERATIVO_UNITARIO = 15.34
-
-# ============================================
-# BASE DE DATOS
-# ============================================
-def init_db():
-    conn = sqlite3.connect('erp_costos.db', check_same_thread=False)
-    c = conn.cursor()
-    
-    # Tabla de usuarios
-    c.execute('''CREATE TABLE IF NOT EXISTS usuarios
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT UNIQUE,
-                  password TEXT,
-                  nombre TEXT,
-                  rol TEXT DEFAULT 'usuario',
-                  activo INTEGER DEFAULT 1)''')
-    
-    # Tabla de productos
-    c.execute('''CREATE TABLE IF NOT EXISTS productos
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  sku TEXT UNIQUE,
-                  codigo_barras TEXT,
-                  nombre TEXT,
-                  linea TEXT,
-                  precio_venta REAL DEFAULT 0,
-                  tiempo_mod REAL DEFAULT 3,
-                  activo INTEGER DEFAULT 1)''')
-    
-    # Insertar usuario admin por defecto
-    c.execute("SELECT * FROM usuarios WHERE username = 'admin'")
-    if not c.fetchone():
-        password_hash = hashlib.sha256('admin123'.encode()).hexdigest()
-        c.execute("INSERT INTO usuarios (username, password, nombre, rol) VALUES (?, ?, ?, ?)",
-                 ('admin', password_hash, 'Administrador', 'dueno'))
-    
-    conn.commit()
+# --- CONEXIÓN A BASE DE DATOS ---
+def get_connection():
+    conn = sqlite3.connect('costos_perfumeria.db', check_same_thread=False)
     return conn
 
-conn = init_db()
+db = get_connection()
 
-# ============================================
-# FUNCIONES DE AUTENTICACIÓN
-# ============================================
-def autenticar(username, password):
-    c = conn.cursor()
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
-    c.execute("SELECT id, username, nombre, rol FROM usuarios WHERE username = ? AND password = ? AND activo = 1",
-             (username, password_hash))
-    return c.fetchone()
-
-# ============================================
-# FUNCIONES DE PRODUCTOS
-# ============================================
-def cargar_productos_csv(df):
-    """Carga productos desde DataFrame de pandas"""
-    c = conn.cursor()
-    resultados = {'nuevos': 0, 'actualizados': 0, 'errores': 0}
+def init_db():
+    cursor = db.cursor()
+    # Tabla de Costos Fijos
+    cursor.execute('''CREATE TABLE IF NOT EXISTS costos_fijos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        concepto TEXT,
+        total_mensual REAL,
+        p_admin REAL DEFAULT 50,
+        p_ventas REAL DEFAULT 10,
+        p_prod REAL DEFAULT 40
+    )''')
     
-    for _, row in df.iterrows():
-        try:
-            sku = str(row['sku']).strip()
-            nombre = row['nombre'] if pd.notna(row.get('nombre')) else sku
-            tiempo_mod = float(row['tiempo_mod']) if pd.notna(row.get('tiempo_mod')) else 3.0
-            linea = row['linea'] if pd.notna(row.get('linea')) else 'General'
+    # Tabla de Configuración MOD
+    cursor.execute('''CREATE TABLE IF NOT EXISTS config_mod (
+        id INTEGER PRIMARY KEY,
+        salario_base REAL,
+        p_prestaciones REAL,
+        num_operarios INTEGER,
+        horas_mes REAL
+    )''')
+    
+    # Tabla de Producción Mensual
+    cursor.execute('''CREATE TABLE IF NOT EXISTS produccion (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mes TEXT,
+        anio INTEGER,
+        unidades INTEGER
+    )''')
+    
+    # Datos iniciales si la tabla está vacía
+    cursor.execute("SELECT COUNT(*) FROM costos_fijos")
+    if cursor.fetchone()[0] == 0:
+        datos_iniciales = [
+            ('Alquiler', 13400.00, 50, 10, 40),
+            ('Internet', 600.00, 50, 10, 40),
+            ('Teléfono', 1300.00, 50, 10, 40),
+            ('Energía Eléctrica', 1000.00, 50, 10, 40),
+            ('Agua', 300.00, 50, 10, 40),
+            ('Seguridad', 800.00, 50, 10, 40),
+            ('Software', 1057.00, 50, 10, 40),
+            ('Contabilidad', 2650.00, 50, 10, 40),
+            ('Asesoría Externa', 8000.00, 50, 10, 40),
+            ('Combustible', 2000.00, 10, 20, 70), # Ajuste según tus datos (200/400/1400)
+            ('Empaque', 1900.00, 0, 20, 80),      # Ajuste según tus datos (0/380/1520)
+            ('Nómina Admin/Ventas', 72288.76, 82.35, 17.65, 0),
+            ('Prestaciones', 30238.39, 82.35, 17.65, 0)
+        ]
+        cursor.executemany("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (?,?,?,?,?)", datos_iniciales)
+        
+        # MOD Inicial
+        cursor.execute("INSERT INTO config_mod VALUES (1, 4252.28, 41.83, 3, 176)")
+        
+        # Producción inicial (ejemplo para promedio)
+        cursor.execute("INSERT INTO produccion (mes, anio, unidades) VALUES ('Enero', 2024, 5000)")
+        
+    db.commit()
+
+init_db()
+
+# --- FUNCIONES DE CÁLCULO ---
+def get_costos_fijos():
+    df = pd.read_sql_query("SELECT * FROM costos_fijos", db)
+    df['Admin (Q)'] = df['total_mensual'] * (df['p_admin'] / 100)
+    df['Ventas (Q)'] = df['total_mensual'] * (df['p_ventas'] / 100)
+    df['Producción (Q)'] = df['total_mensual'] * (df['p_prod'] / 100)
+    return df
+
+# --- INTERFAZ STREAMLIT ---
+st.title("🧪 Sistema ERP: Costos de Perfumería")
+
+tabs = st.tabs(["📊 Matriz Costos Fijos", "👷 Mano de Obra (MOD)", "📦 Producción y Unitarios"])
+
+# TABA 1: COSTOS FIJOS
+with tabs[0]:
+    st.header("Matriz de Costos Fijos Mensuales")
+    
+    with st.expander("➕ Agregar Nuevo Concepto"):
+        with st.form("nuevo_costo"):
+            c1, c2 = st.columns(2)
+            nuevo_concepto = c1.text_input("Concepto")
+            monto = c2.number_input("Total Mensual (Q)", min_value=0.0, step=100.0)
+            p_adm = st.slider("Admin %", 0, 100, 50)
+            p_ven = st.slider("Ventas %", 0, 100, 10)
+            p_pro = st.slider("Producción %", 0, 100, 40)
             
-            c.execute('''INSERT INTO productos (sku, nombre, tiempo_mod, linea)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(sku) DO UPDATE SET
-                            nombre = excluded.nombre,
-                            tiempo_mod = excluded.tiempo_mod,
-                            linea = excluded.linea''',
-                     (sku, nombre, tiempo_mod, linea))
-            resultados['nuevos' if c.rowcount == 1 else 'actualizados'] += 1
-        except Exception as e:
-            resultados['errores'] += 1
-            print(f"Error con {row.get('sku')}: {e}")
-    
-    conn.commit()
-    return resultados
-
-def obtener_productos(linea=None):
-    c = conn.cursor()
-    if linea and linea != "Todas":
-        c.execute("SELECT sku, nombre, tiempo_mod, linea, precio_venta FROM productos WHERE activo = 1 AND linea = ?", (linea,))
-    else:
-        c.execute("SELECT sku, nombre, tiempo_mod, linea, precio_venta FROM productos WHERE activo = 1")
-    return c.fetchall()
-
-def obtener_lineas():
-    c = conn.cursor()
-    c.execute("SELECT DISTINCT linea FROM productos WHERE activo = 1 AND linea IS NOT NULL")
-    return ['Todas'] + [l[0] for l in c.fetchall()]
-
-# ============================================
-# INTERFAZ DE LOGIN
-# ============================================
-if 'autenticado' not in st.session_state:
-    st.session_state.autenticado = False
-    st.session_state.usuario = None
-
-if not st.session_state.autenticado:
-    st.title("🔐 Sistema ERP de Costos - Login")
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.image("https://img.icons8.com/color/96/000000/perfume-bottle.png", width=120)
-        with st.form("login"):
-            username = st.text_input("Usuario")
-            password = st.text_input("Contraseña", type="password")
-            if st.form_submit_button("Ingresar", type="primary", use_container_width=True):
-                usuario = autenticar(username, password)
-                if usuario:
-                    st.session_state.autenticado = True
-                    st.session_state.usuario = {
-                        'id': usuario[0],
-                        'username': usuario[1],
-                        'nombre': usuario[2],
-                        'rol': usuario[3]
-                    }
+            if st.form_submit_button("Guardar"):
+                if (p_adm + p_ven + p_pro) == 100:
+                    db.execute("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (?,?,?,?,?)",
+                               (nuevo_concepto, monto, p_adm, p_ven, p_pro))
+                    db.commit()
+                    st.success("Agregado")
                     st.rerun()
                 else:
-                    st.error("Usuario o contraseña incorrectos")
-    st.stop()
+                    st.error("Los porcentajes deben sumar 100%")
 
-# ============================================
-# INTERFAZ PRINCIPAL
-# ============================================
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/perfume-bottle.png", width=80)
-    st.title(f"🧴 ERP Costos")
-    st.markdown(f"**Usuario:** {st.session_state.usuario['nombre']}")
-    st.markdown(f"**Rol:** {st.session_state.usuario['rol'].upper()}")
-    st.markdown("---")
+    df_fijos = get_costos_fijos()
+    st.dataframe(df_fijos.style.format({"total_mensual": "Q{:.2f}", "Admin (Q)": "Q{:.2f}", "Ventas (Q)": "Q{:.2f}", "Producción (Q)": "Q{:.2f}"}), use_container_width=True)
     
-    menu = st.radio("Menú Principal", [
-        "📊 Dashboard",
-        "📦 Productos",
-        "💰 Costear Pedido",
-        "⚙️ Configuración"
-    ])
+    totales = df_fijos[['total_mensual', 'Admin (Q)', 'Ventas (Q)', 'Producción (Q)']].sum()
     
-    if st.button("🚪 Cerrar Sesión", use_container_width=True):
-        st.session_state.autenticado = False
-        st.rerun()
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("TOTAL MENSUAL", f"Q{totales[0]:,.2f}")
+    col2.metric("Admin (50% avg)", f"Q{totales[1]:,.2f}")
+    col3.metric("Ventas (10% avg)", f"Q{totales[2]:,.2f}")
+    col4.metric("Producción (CIF)", f"Q{totales[3]:,.2f}")
 
-# ============================================
-# DASHBOARD
-# ============================================
-if menu == "📊 Dashboard":
-    st.title("📊 Dashboard")
+# TABA 2: MANO DE OBRA DIRECTA
+with tabs[1]:
+    st.header("Cálculo de Mano de Obra Directa (MOD)")
     
-    productos = obtener_productos()
-    total_productos = len(productos)
+    mod_data = db.execute("SELECT * FROM config_mod WHERE id=1").fetchone()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Productos", total_productos)
-    with col2:
-        st.metric("Líneas Activas", len(obtener_lineas()) - 1)
-    with col3:
-        st.metric("Costo MOD/min", f"Q{COSTO_MOD_MINUTO:.2f}")
-    
-    if productos:
-        df = pd.DataFrame(productos, columns=['SKU', 'Nombre', 'Tiempo MOD', 'Línea', 'Precio'])
-        st.dataframe(df, use_container_width=True)
+    with st.form("form_mod"):
+        c1, c2 = st.columns(2)
+        salario = c1.number_input("Salario Base por Operario", value=mod_data[1])
+        pct_prest = c2.number_input("% Prestaciones Laborales", value=mod_data[2])
+        operarios = c1.number_input("Número de Operarios", value=mod_data[3])
+        hrs_mes = c2.number_input("Horas Laborales/Mes por Operario", value=mod_data[4])
+        
+        if st.form_submit_button("Actualizar Parámetros MOD"):
+            db.execute("UPDATE config_mod SET salario_base=?, p_prestaciones=?, num_operarios=?, horas_mes=? WHERE id=1",
+                       (salario, pct_prest, operarios, hrs_mes))
+            db.commit()
+            st.rerun()
 
-# ============================================
-# PRODUCTOS - CARGA MASIVA
-# ============================================
-elif menu == "📦 Productos":
-    st.title("📦 Gestión de Productos")
-    
-    tab1, tab2, tab3 = st.tabs(["📤 Cargar CSV", "📋 Listado", "✏️ Editar"])
-    
-    with tab1:
-        st.subheader("Cargar Productos desde CSV")
-        
-        st.markdown("""
-        **Formato requerido:**
-        ```csv
-        sku,nombre,tiempo_mod,linea
-        0701095502664,LOCION AAA TOY BOY MOSCHINO,5,REPLICA
-        ```
-        
-        - `sku` y `nombre` son obligatorios
-        - `tiempo_mod` opcional (valor por defecto: 3)
-        - `linea` opcional (valor por defecto: "General")
-        """)
-        
-        archivo = st.file_uploader("Seleccionar archivo CSV", type=['csv'])
-        
-        if archivo:
-            df = pd.read_csv(archivo)
-            st.write("Vista previa:", df.head())
-            
-            if st.button("🚀 Cargar Productos", type="primary"):
-                with st.spinner("Cargando productos..."):
-                    resultados = cargar_productos_csv(df)
-                    st.success(f"""
-                    ✅ Carga completada:
-                    - Nuevos: {resultados['nuevos']}
-                    - Actualizados: {resultados['actualizados']}
-                    - Errores: {resultados['errores']}
-                    """)
-    
-    with tab2:
-        st.subheader("Listado de Productos")
-        
-        lineas = obtener_lineas()
-        linea_filtro = st.selectbox("Filtrar por línea:", lineas)
-        
-        productos = obtener_productos(linea_filtro if linea_filtro != "Todas" else None)
-        
-        if productos:
-            df = pd.DataFrame(productos, columns=['SKU', 'Nombre', 'Tiempo MOD', 'Línea', 'Precio'])
-            st.dataframe(df, use_container_width=True)
-            
-            # Botón para exportar
-            csv = df.to_csv(index=False)
-            st.download_button(
-                label="📥 Exportar a CSV",
-                data=csv,
-                file_name=f"productos_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("No hay productos cargados")
-    
-    with tab3:
-        st.subheader("Editar Producto")
-        st.info("Selecciona un producto del listado para editar (próximamente)")
+    # Cálculos
+    costo_operario_total = salario * (1 + pct_prest/100)
+    total_mod_mensual = costo_operario_total * operarios
+    total_horas = hrs_mes * operarios
+    costo_hora = total_mod_mensual / total_horas if total_horas > 0 else 0
+    costo_min = costo_hora / 60
 
-# ============================================
-# COSTEAR PEDIDO
-# ============================================
-elif menu == "💰 Costear Pedido":
-    st.title("💰 Costear Pedido")
-    
-    st.markdown("""
-    **Sube un archivo CSV con el pedido:**
-    ```csv
-    sku,cantidad,precio
-    0701095502664,10,85.00
-    0737250133904,5,125.00
-    ```
-    - `sku`: Código del producto
-    - `cantidad`: Unidades
-    - `precio`: Precio de venta unitario
-    """)
-    
-    archivo = st.file_uploader("Seleccionar archivo del pedido", type=['csv'])
-    
-    if archivo:
-        df_pedido = pd.read_csv(archivo)
-        st.write("Vista previa del pedido:", df_pedido)
-        
-        if st.button("💰 Calcular Costos", type="primary"):
-            with st.spinner("Calculando..."):
-                # Obtener productos de la BD
-                c = conn.cursor()
-                skus = tuple(df_pedido['sku'].unique())
-                placeholders = ','.join(['?'] * len(skus))
-                c.execute(f"SELECT sku, nombre, tiempo_mod FROM productos WHERE sku IN ({placeholders})", skus)
-                productos_db = {p[0]: {'nombre': p[1], 'tiempo_mod': p[2]} for p in c.fetchall()}
-                
-                # Calcular cada línea
-                resultados = []
-                total_venta = 0
-                total_costo = 0
-                
-                for _, row in df_pedido.iterrows():
-                    sku = str(row['sku']).strip()
-                    cantidad = float(row['cantidad'])
-                    precio = float(row['precio'])
-                    
-                    # Datos del producto
-                    if sku in productos_db:
-                        producto = productos_db[sku]
-                        nombre = producto['nombre']
-                        tiempo_mod = producto['tiempo_mod']
-                        
-                        # Costos
-                        costo_mod = tiempo_mod * COSTO_MOD_MINUTO
-                        costo_variable = costo_mod  # + MP + fórmula (después)
-                        costo_total_unitario = costo_variable + COSTO_FIJO_UNITARIO + GASTO_OPERATIVO_UNITARIO
-                        
-                        # Cálculos
-                        precio_sin_iva = precio / (1 + IVA/100)
-                        iva = precio - precio_sin_iva
-                        subtotal = cantidad * precio
-                        costo_total_linea = cantidad * costo_total_unitario
-                        utilidad = subtotal - costo_total_linea
-                        margen = (utilidad / subtotal * 100) if subtotal > 0 else 0
-                        
-                        total_venta += subtotal
-                        total_costo += costo_total_linea
-                        
-                        estado = "✅"
-                    else:
-                        nombre = "NO ENCONTRADO"
-                        tiempo_mod = 0
-                        costo_mod = 0
-                        costo_total_unitario = 0
-                        precio_sin_iva = precio / (1 + IVA/100)
-                        iva = precio - precio_sin_iva
-                        subtotal = cantidad * precio
-                        costo_total_linea = 0
-                        utilidad = 0
-                        margen = 0
-                        estado = "❌"
-                    
-                    resultados.append({
-                        'SKU': sku,
-                        'Producto': nombre,
-                        'Cantidad': cantidad,
-                        'Precio': f"Q{precio:.2f}",
-                        'Subtotal': f"Q{subtotal:.2f}",
-                        'Costo Unit.': f"Q{costo_total_unitario:.2f}",
-                        'Costo Total': f"Q{costo_total_linea:.2f}",
-                        'Utilidad': f"Q{utilidad:.2f}",
-                        'Margen': f"{margen:.1f}%",
-                        'Estado': estado
-                    })
-                
-                # Mostrar resultados
-                st.markdown("---")
-                st.subheader("📊 Resultados del Pedido")
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Venta", f"Q{total_venta:,.2f}")
-                with col2:
-                    st.metric("Total Costo", f"Q{total_costo:,.2f}")
-                with col3:
-                    utilidad_total = total_venta - total_costo
-                    margen_total = (utilidad_total / total_venta * 100) if total_venta > 0 else 0
-                    st.metric("Utilidad", f"Q{utilidad_total:,.2f}", f"{margen_total:.1f}%")
-                
-                # Tabla de resultados
-                df_resultados = pd.DataFrame(resultados)
-                st.dataframe(df_resultados, use_container_width=True)
-                
-                # Botón para exportar
-                csv_resultados = df_resultados.to_csv(index=False)
-                st.download_button(
-                    label="📥 Descargar Resultados",
-                    data=csv_resultados,
-                    file_name=f"costeo_pedido_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv"
-                )
+    st.subheader("Resultados MOD")
+    res_mod = {
+        "Concepto": ["Salario por Operario", "Costo Total por Operario", "Total Nómina MOD", "Total Horas Disponibles", "Costo por Hora", "Costo por Minuto"],
+        "Valor": [f"Q{salario:,.2f}", f"Q{costo_operario_total:,.2f}", f"Q{total_mod_mensual:,.2f}", f"{total_horas} hrs", f"Q{costo_hora:,.2f}", f"Q{costo_min:,.4f}"]
+    }
+    st.table(pd.DataFrame(res_mod))
 
-# ============================================
-# CONFIGURACIÓN
-# ============================================
-elif menu == "⚙️ Configuración":
-    st.title("⚙️ Configuración del Sistema")
+# TABA 3: PRODUCCIÓN Y UNITARIOS
+with tabs[2]:
+    st.header("Unidades y Costeo Unitario")
     
-    st.info(f"""
-    **Parámetros actuales:**
-    - IVA: {IVA}%
-    - Costo MOD/minuto: Q{COSTO_MOD_MINUTO:.2f}
-    - Costo Fijo Unitario: Q{COSTO_FIJO_UNITARIO:.2f}
-    - Gasto Operativo Unitario: Q{GASTO_OPERATIVO_UNITARIO:.2f}
+    df_prod = pd.read_sql_query("SELECT * FROM produccion", db)
+    promedio_unidades = df_prod['unidades'].mean() if not df_prod.empty else 1
     
-    *Próximamente: configuración dinámica de parámetros*
-    """)
+    st.metric("Promedio Unidades Mensuales", f"{promedio_unidades:,.0f} unidades")
+    
+    # Cálculos finales
+    cifu = totales[3] / promedio_unidades
+    gau = totales[1] / promedio_unidades
+    gvu = totales[2] / promedio_unidades
+    modu = total_mod_mensual / promedio_unidades
+
+    st.subheader("Costos Unitarios Base")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("CIF Unitario", f"Q{cifu:,.2f}")
+    col_b.metric("Admin Unitario", f"Q{gau:,.2f}")
+    col_c.metric("Ventas Unitario", f"Q{gvu:,.2f}")
+    col_d.metric("MOD Unitario", f"Q{modu:,.2f}")
