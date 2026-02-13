@@ -2,173 +2,224 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 
-# Configuración de página
-st.set_page_config(page_title="ERP Costos Perfumería", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="ERP Perfumería - Fase 2", layout="wide")
 
-# --- CONEXIÓN A BASE DE DATOS ---
 def get_connection():
-    conn = sqlite3.connect('costos_perfumeria.db', check_same_thread=False)
-    return conn
+    return sqlite3.connect('costos_perfumeria.db', check_same_thread=False)
 
 db = get_connection()
 
-def init_db():
+def init_db_fase2():
     cursor = db.cursor()
-    # Tabla de Costos Fijos
-    cursor.execute('''CREATE TABLE IF NOT EXISTS costos_fijos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        concepto TEXT,
-        total_mensual REAL,
-        p_admin REAL DEFAULT 50,
-        p_ventas REAL DEFAULT 10,
-        p_prod REAL DEFAULT 40
-    )''')
-    
-    # Tabla de Configuración MOD
-    cursor.execute('''CREATE TABLE IF NOT EXISTS config_mod (
+    # 1. Configuración Global (Unidades Promedio)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS config_global (
         id INTEGER PRIMARY KEY,
-        salario_base REAL,
-        p_prestaciones REAL,
-        num_operarios INTEGER,
-        horas_mes REAL
+        unidades_promedio_mes INTEGER DEFAULT 1
     )''')
     
-    # Tabla de Producción Mensual
-    cursor.execute('''CREATE TABLE IF NOT EXISTS produccion (
+    # 2. Tabla de Materias Primas (Catálogo)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS materias_primas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        mes TEXT,
-        anio INTEGER,
-        unidades INTEGER
+        nombre TEXT,
+        categoria TEXT, -- 'Materia Prima' o 'Fórmula'
+        unidad_medida TEXT,
+        costo_unitario REAL
     )''')
-    
-    # Datos iniciales si la tabla está vacía
-    cursor.execute("SELECT COUNT(*) FROM costos_fijos")
+
+    # 3. Tabla de Productos
+    cursor.execute('''CREATE TABLE IF NOT EXISTS productos (
+        codigo_barras TEXT PRIMARY KEY,
+        sku TEXT,
+        nombre TEXT,
+        linea TEXT,
+        tipo_produccion TEXT, -- 'Unidad' o 'Lote'
+        unidades_por_lote INTEGER DEFAULT 1,
+        minutos_por_lote REAL DEFAULT 0,
+        minutos_por_unidad REAL DEFAULT 0,
+        precio_venta_sugerido REAL DEFAULT 0,
+        activo INTEGER DEFAULT 1
+    )''')
+
+    # 4. Tabla de Recetas (Ingredientes)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS recetas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        producto_id TEXT,
+        mp_id INTEGER,
+        cantidad REAL,
+        FOREIGN KEY(producto_id) REFERENCES productos(codigo_barras),
+        FOREIGN KEY(mp_id) REFERENCES materias_primas(id)
+    )''')
+
+    # Datos iniciales para pruebas
+    cursor.execute("SELECT COUNT(*) FROM config_global")
     if cursor.fetchone()[0] == 0:
-        datos_iniciales = [
-            ('Alquiler', 13400.00, 50, 10, 40),
-            ('Internet', 600.00, 50, 10, 40),
-            ('Teléfono', 1300.00, 50, 10, 40),
-            ('Energía Eléctrica', 1000.00, 50, 10, 40),
-            ('Agua', 300.00, 50, 10, 40),
-            ('Seguridad', 800.00, 50, 10, 40),
-            ('Software', 1057.00, 50, 10, 40),
-            ('Contabilidad', 2650.00, 50, 10, 40),
-            ('Asesoría Externa', 8000.00, 50, 10, 40),
-            ('Combustible', 2000.00, 10, 20, 70), # Ajuste según tus datos (200/400/1400)
-            ('Empaque', 1900.00, 0, 20, 80),      # Ajuste según tus datos (0/380/1520)
-            ('Nómina Admin/Ventas', 72288.76, 82.35, 17.65, 0),
-            ('Prestaciones', 30238.39, 82.35, 17.65, 0)
+        cursor.execute("INSERT INTO config_global (id, unidades_promedio_mes) VALUES (1, 1000)")
+        # MP de ejemplo
+        mps = [
+            ('Envase 100ml', 'Materia Prima', 'Unidad', 5.50),
+            ('Esencia Pink Sugar', 'Fórmula', 'ml', 0.85),
+            ('Alcohol Etílico', 'Fórmula', 'ml', 0.05),
+            ('Caja Lujo', 'Materia Prima', 'Unidad', 2.10)
         ]
-        cursor.executemany("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (?,?,?,?,?)", datos_iniciales)
-        
-        # MOD Inicial
-        cursor.execute("INSERT INTO config_mod VALUES (1, 4252.28, 41.83, 3, 176)")
-        
-        # Producción inicial (ejemplo para promedio)
-        cursor.execute("INSERT INTO produccion (mes, anio, unidades) VALUES ('Enero', 2024, 5000)")
-        
+        cursor.executemany("INSERT INTO materias_primas (nombre, categoria, unidad_medida, costo_unitario) VALUES (?,?,?,?)", mps)
     db.commit()
 
-init_db()
+init_db_fase2()
 
-# --- FUNCIONES DE CÁLCULO ---
-def get_costos_fijos():
-    df = pd.read_sql_query("SELECT * FROM costos_fijos", db)
-    df['Admin (Q)'] = df['total_mensual'] * (df['p_admin'] / 100)
-    df['Ventas (Q)'] = df['total_mensual'] * (df['p_ventas'] / 100)
-    df['Producción (Q)'] = df['total_mensual'] * (df['p_prod'] / 100)
-    return df
+# --- LÓGICA DE NEGOCIO ---
 
-# --- INTERFAZ STREAMLIT ---
-st.title("🧪 Sistema ERP: Costos de Perfumería")
+def duplicar_receta(origen_cod, destino_cod):
+    cursor = db.cursor()
+    cursor.execute("DELETE FROM recetas WHERE producto_id = ?", (destino_cod,))
+    cursor.execute('''INSERT INTO recetas (producto_id, mp_id, cantidad) 
+                      SELECT ?, mp_id, cantidad FROM recetas WHERE producto_id = ?''', (destino_cod, origen_cod))
+    db.commit()
 
-tabs = st.tabs(["📊 Matriz Costos Fijos", "👷 Mano de Obra (MOD)", "📦 Producción y Unitarios"])
+# --- INTERFAZ ---
+st.title("🧪 ERP Perfumería: Producción y Recetas")
 
-# TABA 1: COSTOS FIJOS
+tabs = st.tabs(["⚙️ Config. Base", "📦 Catálogo Productos", "📝 Constructor de Recetas", "🌿 Materias Primas"])
+
+# TAB: CONFIGURACIÓN BASE (Denominador de Costos)
 with tabs[0]:
-    st.header("Matriz de Costos Fijos Mensuales")
+    st.header("Configuración de Capacidad")
+    res_global = db.execute("SELECT unidades_promedio_mes FROM config_global WHERE id=1").fetchone()
     
-    with st.expander("➕ Agregar Nuevo Concepto"):
-        with st.form("nuevo_costo"):
-            c1, c2 = st.columns(2)
-            nuevo_concepto = c1.text_input("Concepto")
-            monto = c2.number_input("Total Mensual (Q)", min_value=0.0, step=100.0)
-            p_adm = st.slider("Admin %", 0, 100, 50)
-            p_ven = st.slider("Ventas %", 0, 100, 10)
-            p_pro = st.slider("Producción %", 0, 100, 40)
-            
-            if st.form_submit_button("Guardar"):
-                if (p_adm + p_ven + p_pro) == 100:
-                    db.execute("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (?,?,?,?,?)",
-                               (nuevo_concepto, monto, p_adm, p_ven, p_pro))
-                    db.commit()
-                    st.success("Agregado")
-                    st.rerun()
-                else:
-                    st.error("Los porcentajes deben sumar 100%")
-
-    df_fijos = get_costos_fijos()
-    st.dataframe(df_fijos.style.format({"total_mensual": "Q{:.2f}", "Admin (Q)": "Q{:.2f}", "Ventas (Q)": "Q{:.2f}", "Producción (Q)": "Q{:.2f}"}), use_container_width=True)
-    
-    totales = df_fijos[['total_mensual', 'Admin (Q)', 'Ventas (Q)', 'Producción (Q)']].sum()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("TOTAL MENSUAL", f"Q{totales[0]:,.2f}")
-    col2.metric("Admin (50% avg)", f"Q{totales[1]:,.2f}")
-    col3.metric("Ventas (10% avg)", f"Q{totales[2]:,.2f}")
-    col4.metric("Producción (CIF)", f"Q{totales[3]:,.2f}")
-
-# TABA 2: MANO DE OBRA DIRECTA
-with tabs[1]:
-    st.header("Cálculo de Mano de Obra Directa (MOD)")
-    
-    mod_data = db.execute("SELECT * FROM config_mod WHERE id=1").fetchone()
-    
-    with st.form("form_mod"):
-        c1, c2 = st.columns(2)
-        salario = c1.number_input("Salario Base por Operario", value=mod_data[1])
-        pct_prest = c2.number_input("% Prestaciones Laborales", value=mod_data[2])
-        operarios = c1.number_input("Número de Operarios", value=mod_data[3])
-        hrs_mes = c2.number_input("Horas Laborales/Mes por Operario", value=mod_data[4])
-        
-        if st.form_submit_button("Actualizar Parámetros MOD"):
-            db.execute("UPDATE config_mod SET salario_base=?, p_prestaciones=?, num_operarios=?, horas_mes=? WHERE id=1",
-                       (salario, pct_prest, operarios, hrs_mes))
+    with st.form("form_global"):
+        nueva_media = st.number_input("Unidades Promedio Producidas al Mes", value=res_global[0], min_value=1)
+        if st.form_submit_button("Actualizar Promedio"):
+            db.execute("UPDATE config_global SET unidades_promedio_mes = ? WHERE id=1", (nueva_media,))
             db.commit()
-            st.rerun()
+            st.success("Promedio actualizado. Esto afectará el prorrateo de costos fijos.")
 
-    # Cálculos
-    costo_operario_total = salario * (1 + pct_prest/100)
-    total_mod_mensual = costo_operario_total * operarios
-    total_horas = hrs_mes * operarios
-    costo_hora = total_mod_mensual / total_horas if total_horas > 0 else 0
-    costo_min = costo_hora / 60
+# TAB: CATÁLOGO DE PRODUCTOS
+with tabs[1]:
+    st.header("Gestión de Productos")
+    with st.expander("🆕 Registrar Nuevo Producto"):
+        with st.form("nuevo_producto"):
+            c1, c2, c3 = st.columns(3)
+            cod = c1.text_input("Código de Barras")
+            sku = c2.text_input("SKU Interno")
+            nom = c3.text_input("Nombre del Producto")
+            
+            lin = c1.selectbox("Línea", ["Rollon", "Estuche", "Spray", "AAA", "F1", "Estrellita"])
+            tipo = c2.selectbox("Tipo de Producción", ["Unidad", "Lote"])
+            
+            if tipo == "Lote":
+                u_lote = c3.number_input("Unidades por Lote", min_value=1, value=100)
+                m_lote = c1.number_input("Minutos por Lote", min_value=0.1, value=60.0)
+                m_unit = m_lote / u_lote
+            else:
+                u_lote = 1
+                m_unit = c3.number_input("Minutos por Unidad", min_value=0.1, value=5.0)
+                m_lote = m_unit
 
-    st.subheader("Resultados MOD")
-    res_mod = {
-        "Concepto": ["Salario por Operario", "Costo Total por Operario", "Total Nómina MOD", "Total Horas Disponibles", "Costo por Hora", "Costo por Minuto"],
-        "Valor": [f"Q{salario:,.2f}", f"Q{costo_operario_total:,.2f}", f"Q{total_mod_mensual:,.2f}", f"{total_horas} hrs", f"Q{costo_hora:,.2f}", f"Q{costo_min:,.4f}"]
-    }
-    st.table(pd.DataFrame(res_mod))
+            pvp = c2.number_input("Precio Venta Sugerido (Q)", min_value=0.0)
+            
+            if st.form_submit_button("Guardar Producto"):
+                db.execute('''INSERT INTO productos (codigo_barras, sku, nombre, linea, tipo_produccion, 
+                              unidades_por_lote, minutos_por_lote, minutos_por_unidad, precio_venta_sugerido) 
+                              VALUES (?,?,?,?,?,?,?,?,?)''', 
+                           (cod, sku, nom, lin, tipo, u_lote, m_lote, m_unit, pvp))
+                db.commit()
+                st.rerun()
 
-# TABA 3: PRODUCCIÓN Y UNITARIOS
+    df_prod = pd.read_sql_query("SELECT * FROM productos WHERE activo=1", db)
+    st.dataframe(df_prod, use_container_width=True)
+
+# TAB: CONSTRUCTOR DE RECETAS
 with tabs[2]:
-    st.header("Unidades y Costeo Unitario")
+    st.header("Estructura de Costos por Producto")
     
-    df_prod = pd.read_sql_query("SELECT * FROM produccion", db)
-    promedio_unidades = df_prod['unidades'].mean() if not df_prod.empty else 1
+    prods = db.execute("SELECT codigo_barras, nombre FROM productos").fetchall()
+    prod_dict = {f"{p[1]} ({p[0]})": p[0] for p in prods}
     
-    st.metric("Promedio Unidades Mensuales", f"{promedio_unidades:,.0f} unidades")
-    
-    # Cálculos finales
-    cifu = totales[3] / promedio_unidades
-    gau = totales[1] / promedio_unidades
-    gvu = totales[2] / promedio_unidades
-    modu = total_mod_mensual / promedio_unidades
+    if prods:
+        col_sel, col_dup = st.columns([2, 1])
+        prod_sel_nom = col_sel.selectbox("Seleccione Producto para editar receta", prod_dict.keys())
+        prod_id = prod_dict[prod_sel_nom]
+        
+        # Botón Duplicar
+        with col_dup:
+            st.write("---")
+            prod_origen = st.selectbox("Duplicar desde:", ["Seleccionar..."] + list(prod_dict.keys()), key="dup_src")
+            if st.button("🚀 Clonar Receta") and prod_origen != "Seleccionar...":
+                duplicar_receta(prod_dict[prod_origen], prod_id)
+                st.success("Receta duplicada con éxito.")
+                st.rerun()
 
-    st.subheader("Costos Unitarios Base")
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("CIF Unitario", f"Q{cifu:,.2f}")
-    col_b.metric("Admin Unitario", f"Q{gau:,.2f}")
-    col_c.metric("Ventas Unitario", f"Q{gvu:,.2f}")
-    col_d.metric("MOD Unitario", f"Q{modu:,.2f}")
+        # Datos del producto seleccionado
+        p_info = db.execute("SELECT tipo_produccion, unidades_por_lote, minutos_por_unidad FROM productos WHERE codigo_barras=?", (prod_id,)).fetchone()
+        
+        # Obtener costo_minuto de la Fase 1 (Simulado aquí con el valor que diste: 0.44)
+        costo_minuto_actual = 0.44 
+
+        # Interfaz de dos paneles
+        panel_izq, panel_der = st.columns(2)
+        
+        with panel_der:
+            st.subheader("➕ Agregar Ingrediente")
+            mps = db.execute("SELECT id, nombre, categoria, costo_unitario, unidad_medida FROM materias_primas").fetchall()
+            mp_dict = {f"{m[1]} ({m[2]}) - {m[4]}": m for m in mps}
+            
+            mp_sel_nom = st.selectbox("Buscar Materia Prima", mp_dict.keys())
+            cant = st.number_input("Cantidad necesaria", min_value=0.0, step=0.01)
+            
+            if st.button("Añadir a Receta"):
+                db.execute("INSERT INTO recetas (producto_id, mp_id, cantidad) VALUES (?,?,?)", 
+                           (prod_id, mp_dict[mp_sel_nom][0], cant))
+                db.commit()
+                st.rerun()
+
+        with panel_izq:
+            st.subheader("📋 Composición de la Receta")
+            query_receta = '''
+                SELECT r.id, m.nombre, m.categoria, r.cantidad, m.unidad_medida, m.costo_unitario,
+                (r.cantidad * m.costo_unitario) as subtotal
+                FROM recetas r JOIN materias_primas m ON r.mp_id = m.id
+                WHERE r.producto_id = ?
+            '''
+            df_receta = pd.read_sql_query(query_receta, db, params=(prod_id,))
+            
+            if not df_receta.empty:
+                st.table(df_receta[['nombre', 'categoria', 'cantidad', 'unidad_medida', 'subtotal']])
+                
+                # Cálculos de Totales
+                total_formula = df_receta[df_receta['categoria'] == 'Fórmula']['subtotal'].sum()
+                total_mp = df_receta[df_receta['categoria'] == 'Materia Prima']['subtotal'].sum()
+                costo_materiales = total_formula + total_mp
+                
+                # Ajuste por lote
+                divisor = p_info[1] if p_info[0] == "Lote" else 1
+                
+                costo_mat_unitario = costo_materiales / divisor
+                costo_mod_unitario = p_info[2] * costo_minuto_actual
+                costo_variable_total = costo_mat_unitario + costo_mod_unitario
+                
+                st.divider()
+                if p_info[0] == "Lote":
+                    st.info(f"💡 Esta receta es por LOTE ({p_info[1]} uds).")
+                
+                c_a, c_b = st.columns(2)
+                c_a.metric("Costo Materiales (Unit)", f"Q{costo_mat_unitario:.2f}")
+                c_b.metric("Costo MOD (Unit)", f"Q{costo_mod_unitario:.2f}")
+                st.metric("COSTO VARIABLE TOTAL UNITARIO", f"Q{costo_variable_total:.2f}")
+
+# TAB: MATERIAS PRIMAS (Gestión de precios base)
+with tabs[3]:
+    st.header("Catálogo de Materias Primas")
+    # Formulario simple para añadir MP
+    with st.expander("Añadir Nueva Materia Prima"):
+        with st.form("nueva_mp"):
+            n_mp = st.text_input("Nombre MP")
+            cat_mp = st.radio("Categoría", ["Fórmula", "Materia Prima"])
+            uni_mp = st.text_input("Unidad (ej: ml, gramo, Unidad)")
+            cos_mp = st.number_input("Costo Unitario (Q)", min_value=0.0)
+            if st.form_submit_button("Guardar MP"):
+                db.execute("INSERT INTO materias_primas (nombre, categoria, unidad_medida, costo_unitario) VALUES (?,?,?,?)",
+                           (n_mp, cat_mp, uni_mp, cos_mp))
+                db.commit()
+                st.rerun()
+    
+    st.dataframe(pd.read_sql_query("SELECT * FROM materias_primas", db), use_container_width=True)
