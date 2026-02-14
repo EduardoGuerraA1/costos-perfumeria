@@ -359,7 +359,14 @@ with tabs[2]:
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
     st.header("Gestión de Producción")
-    
+    ry:
+        mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
+        t_mod_mensual = float(mod_cfg['salario_base'] * mod_cfg['num_operarios'] * (1 + mod_cfg['p_prestaciones']/100))
+        minutos_disponibles = float(mod_cfg['horas_mes'] * mod_cfg['num_operarios'] * 60)
+        costo_minuto = t_mod_mensual / minutos_disponibles if minutos_disponibles > 0 else 0
+        st.info(f"⏱️ **Costo de Mano de Obra por Minuto:** Q{costo_minuto:,.4f}")
+    except:
+        st.warning("Configure la nómina de producción para calcular el costo por minuto.")
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
         with st.form("csv_p_f", clear_on_submit=True):
             f_p = st.file_uploader("Subir CSV Productos", type="csv")
@@ -371,16 +378,26 @@ with tabs[3]:
                 st.success("Cargado"); st.rerun()
 
     c_left, c_right = st.columns([1, 2])
-    with c_left:
+with c_left:
         st.subheader("🆕 Crear Individual")
         with st.form("new_p_safe"):
             cod = st.text_input("Código")
             nom = st.text_input("Nombre")
             tip = st.selectbox("Tipo", ["Unidad", "Lote"])
             uds = st.number_input("Uds/Lote", 1)
-            prc = st.number_input("Precio", 0.0)
+            # NUEVO CAMPO: Tiempo de ciclo
+            ciclo = st.number_input("Tiempo de ciclo (Minutos por unidad)", value=5.0, step=0.1)
+            prc = st.number_input("Precio Venta", 0.0)
+            
             if st.form_submit_button("💾 Guardar"):
-                run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p)", {'c':cod, 'n':nom, 't':tip, 'u':uds, 'p':prc})
+                # Query actualizado para incluir minutos_por_unidad
+                run_query("""
+                    INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido) 
+                    VALUES (:c, :n, :t, :u, :m, :p)
+                    ON CONFLICT (codigo_barras) DO UPDATE SET 
+                    nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
+                """, {'c':cod, 'n':nom, 't':tip, 'u':uds, 'm':ciclo, 'p':prc})
+                st.success(f"Producto {nom} guardado.")
                 st.rerun()
 
 with c_right:
