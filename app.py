@@ -3,57 +3,48 @@ import pandas as pd
 import sqlalchemy
 from sqlalchemy import create_engine, text
 import urllib.parse
-import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="ERP Perfumería - Final", layout="wide")
 
 # ==============================================================================
-# 🔐 CONEXIÓN A BASE DE DATOS (POOLER CORREGIDO)
+# 🔐 CONEXIÓN A BASE DE DATOS (VIA TRANSACTION POOLER - PUERTO 6543)
 # ==============================================================================
 
-# 1. DATOS CORREGIDOS (Extraídos de tus errores)
-# El Host del pooler suele ser aws-0 para US East, aunque tus errores decían aws-1.
-# Si aws-0 falla, prueba con aws-1.
+# 1. CREDENCIALES EXACTAS PARA EL POOLER
+# Nota: Si el host 'aws-0' no funciona, cámbialo a 'aws-1' según lo que diga Supabase
 DB_HOST = "aws-0-us-east-1.pooler.supabase.com" 
 DB_NAME = "postgres"
+DB_USER = "postgres.nzlysybivtiumentgpvi" # <--- Usuario especial del pooler
+DB_PORT = "6543" 
+DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡La que creaste recientemente!
 
-# ¡OJO AQUÍ! Para el puerto 6543, el usuario NO es solo "postgres".
-# Debe llevar el ID de tu proyecto al final.
-DB_USER = "postgres.nzlysybivtiumentgpvi" 
-
-DB_PORT = "5432" 
-DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡IMPORTANTE: La nueva clave sin símbolos!
-
-# 2. CONSTRUCCIÓN DE URL BLINDADA
+# 2. CONSTRUCCIÓN DE URL SEGURA
 try:
     encoded_password = urllib.parse.quote_plus(DB_PASS)
-    # Usamos postgresql+psycopg2 para mayor compatibilidad
+    # Importante: Usamos postgresql+psycopg2 y sslmode require
     DB_URL = f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
     @st.cache_resource
     def get_engine():
-        # pool_pre_ping ayuda a reconectar si se cae la conexión
+        # pool_pre_ping ayuda a detectar si la conexión se cerró por inactividad
         return create_engine(DB_URL, pool_pre_ping=True)
 
     engine = get_engine()
     
-    # Test de vida
+    # Test de conexión
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
-    st.sidebar.success("✅ Conectado (Vía Pooler 6543)")
+    st.sidebar.success("✅ Conectado a la Nube (Puerto 6543)")
 
 except Exception as e:
     st.error("❌ Error de Conexión")
-    st.warning("Posibles causas:")
-    st.markdown("""
-    1. **Contraseña incorrecta:** Asegúrate de usar la que acabas de resetear.
-    2. **Bloqueo temporal:** Si dice 'Circuit breaker open', espera 20 mins y recarga.
-    3. **Host:** Si falla, intenta cambiar `aws-0` por `aws-1` en el código.
-    """)
+    if "Circuit breaker open" in str(e):
+        st.warning("⚠️ Supabase bloqueó el acceso temporalmente por demasiados errores. Espera 15 minutos sin intentar conectar.")
+    else:
+        st.info("Asegúrate de haber seleccionado 'Transaction Pooler' en Supabase y que la contraseña sea correcta.")
     st.code(str(e))
     st.stop()
-# ==============================================================================
 # LÓGICA DE NEGOCIO Y AUTO-REPARACIÓN
 # ==============================================================================
 def run_query(query, params=None):
