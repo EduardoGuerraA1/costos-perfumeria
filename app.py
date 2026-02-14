@@ -144,16 +144,29 @@ with tabs[1]:
     st.header("Matriz de Costos Fijos")
     
     # Carga CSV
+    # Carga CSV (CORREGIDO CON BOTÓN DE SEGURIDAD)
     with st.expander("📂 Cargar Gastos (CSV)"):
+        st.info("Nota: Sube el archivo y luego presiona el botón 'Procesar Carga' una sola vez.")
         f = st.file_uploader("CSV: concepto,total_mensual,p_admin,p_ventas,p_prod", type="csv")
-        if f:
+        
+        # CAMBIO CLAVE: Agregamos un botón. Si no hay click, no hay inserción.
+        if f and st.button("🚀 Procesar Carga CSV"):
             try:
                 df_csv = pd.read_csv(f)
+                count = 0
                 for _, r in df_csv.iterrows():
                     run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
                               {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
-                st.success("Cargado"); st.rerun()
-            except Exception as e: st.error(e)
+                    count += 1
+                st.success(f"✅ Éxito: Se cargaron {count} registros correctamente.")
+                
+                # Esperamos 2 segundos para que leas el mensaje y luego recargamos
+                import time
+                time.sleep(2)
+                st.rerun()
+                
+            except Exception as e: 
+                st.error(f"Error en el CSV: {e}")
 
     # 1. Datos Manuales
     df_man = get_data("SELECT id, concepto, total_mensual, p_admin, p_ventas, p_prod FROM costos_fijos ORDER BY id")
