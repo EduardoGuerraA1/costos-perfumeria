@@ -143,31 +143,65 @@ with tabs[0]:
 with tabs[1]:
     st.header("Matriz de Costos Fijos")
     
-    # Carga CSV
-    # Carga CSV (CORREGIDO CON BOTÓN DE SEGURIDAD)
-    with st.expander("📂 Cargar Gastos (CSV)"):
-        st.info("Nota: Sube el archivo y luego presiona el botón 'Procesar Carga' una sola vez.")
-        f = st.file_uploader("CSV: concepto,total_mensual,p_admin,p_ventas,p_prod", type="csv")
+   # ---------------------------------------------------------
+    # SECCIÓN BLINDADA DE CARGA CSV
+    # ---------------------------------------------------------
+    with st.expander("📂 Cargar Gastos (CSV) - MODO SEGURO"):
+        st.warning("⚠️ Instrucciones: Sube el archivo y presiona el botón UNA sola vez. Espera a que salga el mensaje de 'Éxito'.")
         
-        # CAMBIO CLAVE: Agregamos un botón. Si no hay click, no hay inserción.
-        if f and st.button("🚀 Procesar Carga CSV"):
-            try:
-                df_csv = pd.read_csv(f)
-                count = 0
-                for _, r in df_csv.iterrows():
-                    run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
-                              {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
-                    count += 1
-                st.success(f"✅ Éxito: Se cargaron {count} registros correctamente.")
-                
-                # Esperamos 2 segundos para que leas el mensaje y luego recargamos
-                import time
-                time.sleep(2)
-                st.rerun()
-                
-            except Exception as e: 
-                st.error(f"Error en el CSV: {e}")
+        # Usamos un formulario para evitar dobles clics o recargas accidentales
+        with st.form("carga_csv_form", clear_on_submit=True):
+            f = st.file_uploader("Selecciona tu archivo CSV", type="csv")
+            
+            # Checkbox importante para evitar duplicados
+            borrar_antes = st.checkbox("🗑️ Borrar TODA la tabla de costos fijos antes de cargar (Recomendado para evitar duplicados)", value=True)
+            
+            # Botón de envío dentro del formulario
+            submitted = st.form_submit_button("🚀 PROCESAR CARGA")
+            
+            if submitted and f is not None:
+                try:
+                    # 1. Borrado preventivo (Si se marcó la opción)
+                    if borrar_antes:
+                        run_query("TRUNCATE TABLE costos_fijos RESTART IDENTITY;")
+                        st.write("🧹 Tabla limpiada correctamente...")
+                    
+                    # 2. Lectura y Carga
+                    df_csv = pd.read_csv(f)
+                    total_filas = len(df_csv)
+                    
+                    # Barra de progreso
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    count = 0
+                    for index, r in df_csv.iterrows():
+                        # Insertamos fila por fila
+                        run_query(
+                            "INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
+                            {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']}
+                        )
+                        count += 1
+                        # Actualizamos barra cada 10 filas para no alentar
+                        if count % 10 == 0:
+                            progress = min(count / total_filas, 1.0)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Subiendo registro {count} de {total_filas}...")
+                    
+                    # 3. Finalización
+                    progress_bar.progress(1.0)
+                    st.success(f"✅ ¡Éxito! Se cargaron {count} registros correctamente.")
+                    st.info("Por favor espera, actualizando tabla...")
+                    
+                    # Pequeña pausa y recarga
+                    import time
+                    time.sleep(2)
+                    st.rerun()
 
+                except Exception as e:
+                    st.error(f"❌ Ocurrió un error: {e}")
+            elif submitted and f is None:
+                st.warning("⚠️ Por favor selecciona un archivo primero.")
     # 1. Datos Manuales
     df_man = get_data("SELECT id, concepto, total_mensual, p_admin, p_ventas, p_prod FROM costos_fijos ORDER BY id")
     
