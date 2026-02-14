@@ -22,7 +22,7 @@ DB_NAME = "postgres"
 # Debe llevar el ID de tu proyecto al final.
 DB_USER = "postgres.nzlysybivtiumentgpvi" 
 
-DB_PORT = "6543" 
+DB_PORT = "5432" 
 DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡IMPORTANTE: La nueva clave sin símbolos!
 
 # 2. CONSTRUCCIÓN DE URL BLINDADA
