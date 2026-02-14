@@ -10,7 +10,7 @@ st.set_page_config(page_title="ERP Perfumería - Final", layout="wide")
 # ==============================================================================
 # 🔐 CONEXIÓN A BASE DE DATOS
 # ==============================================================================
-DB_HOST = "aws-1-us-east-1.pooler.supabase.com"
+DB_HOST = "db.nzlysybivtiumentgpvi.supabase.co"
 DB_NAME = "postgres"
 DB_USER = "postgres.nzlysybivtiumentgpvi"
 DB_PORT = "5432"
