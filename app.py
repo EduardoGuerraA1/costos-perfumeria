@@ -344,82 +344,64 @@ with tabs[1]:
 # --- TAB 3: MATERIAS PRIMAS ---
 with tabs[2]:
     st.header("Inventario Materia Prima")
-    df_mp = get_data("SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas ORDER BY nombre")
-    ed_mp = st.data_editor(df_mp, num_rows="dynamic", key="mp_editor_final", disabled=["id"])
-    if st.button("💾 Guardar MP"):
+    df_mps = get_data("SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas ORDER BY nombre")
+    ed_mp = st.data_editor(df_mps, num_rows="dynamic", key="mp_ed_safe", disabled=["id"])
+    if st.button("💾 Guardar Cambios MP"):
         for _, r in ed_mp.iterrows():
-            if pd.notna(r['id']): run_query("UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id", {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unit'], 'p':r['costo_unitario'], 'id':r['id']})
-            else: run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)", {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario']})
+            if 'id' in r and pd.notna(r['id']): 
+                run_query("UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id", 
+                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':r['id']})
+            else: 
+                run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)", 
+                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario']})
         st.rerun()
 
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
     st.header("Gestión de Producción")
     
-    # SECCIÓN CARGA MASIVA (RESTAURADA)
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
-        with st.form("csv_prod_form", clear_on_submit=True):
-            f_p = st.file_uploader("CSV Productos", type="csv")
-            if st.form_submit_button("Cargar Productos") and f_p:
-                try:
-                    dfp = pd.read_csv(f_p)
-                    for _, r in dfp.iterrows():
-                        run_query("""INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido)
-                            VALUES (:c, :n, :t, :u, :p) ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n""",
-                            {'c':str(r['codigo']), 'n':r['nombre'], 't':r['tipo'], 'u':r['unidades_lote'], 'p':r['precio']})
-                    st.success("Cargado"); st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+        with st.form("csv_p_f", clear_on_submit=True):
+            f_p = st.file_uploader("Subir CSV Productos", type="csv")
+            if st.form_submit_button("Procesar Productos") and f_p:
+                df_p = pd.read_csv(f_p)
+                for _, r in df_p.iterrows():
+                    run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p) ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n",
+                              {'c':str(r['codigo']), 'n':r['nombre'], 't':r['tipo'], 'u':r['unidades_lote'], 'p':r['precio']})
+                st.success("Cargado"); st.rerun()
 
-    c_izq, c_der = st.columns([1, 2])
-    
-    with c_izq:
+    c_left, c_right = st.columns([1, 2])
+    with c_left:
         st.subheader("🆕 Crear Individual")
-        with st.form("new_p_form"):
-            c = st.text_input("Código")
-            n = st.text_input("Nombre")
-            t = st.selectbox("Tipo", ["Unidad", "Lote"])
-            u = st.number_input("Uds/Lote", 1)
-            p = st.number_input("Precio Venta", 0.0)
-            if st.form_submit_button("💾 Guardar Producto"):
-                run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p) ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n", {'c':c, 'n':n, 't':t, 'u':u, 'p':p})
+        with st.form("new_p_safe"):
+            cod = st.text_input("Código")
+            nom = st.text_input("Nombre")
+            tip = st.selectbox("Tipo", ["Unidad", "Lote"])
+            uds = st.number_input("Uds/Lote", 1)
+            prc = st.number_input("Precio", 0.0)
+            if st.form_submit_button("💾 Guardar"):
+                run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p)", {'c':cod, 'n':nom, 't':tip, 'u':uds, 'p':prc})
                 st.rerun()
-        
-        with st.expander("👯 Duplicar Receta"):
-            p_list = get_data("SELECT codigo_barras, nombre FROM productos")
-            if not p_list.empty:
-                orig = st.selectbox("Copiar de:", p_list['nombre'].tolist())
-                dest = st.selectbox("Pegar en:", p_list['nombre'].tolist())
-                if st.button("Ejecutar Clonación"):
-                    c_orig = p_list[p_list['nombre']==orig]['codigo_barras'].values[0]
-                    c_dest = p_list[p_list['nombre']==dest]['codigo_barras'].values[0]
-                    run_query("DELETE FROM recetas WHERE producto_id=:d", {'d':c_dest})
-                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) SELECT :d, mp_id, cantidad, unidad_uso FROM recetas WHERE producto_id=:o", {'d':c_dest, 'o':c_orig})
-                    st.success("Clonado")
 
-    with c_der:
-        st.subheader("🛠️ Editor de Receta")
-        prods = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
-        if not prods.empty:
-            sel_p = st.selectbox("Seleccione Producto para editar receta:", prods['nombre'].tolist())
-            pid = prods[prods['nombre']==sel_p]['codigo_barras'].values[0]
+    with c_right:
+        prods_list = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
+        if not prods_list.empty:
+            sel_p = st.selectbox("Editar Receta de:", prods_list['nombre'].tolist())
+            pid = prods_list[prods_list['nombre']==sel_p]['codigo_barras'].values[0]
             
-            mps = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
-            with st.form("add_mp_receta"):
-                ca, cb, cc = st.columns([3,1,1])
-                mp_n = ca.selectbox("Materia Prima", mps['nombre'].tolist())
-                mp_row = mps[mps['nombre']==mp_n].iloc[0]
-                cant = cb.number_input("Cant.", format="%.4f")
-                u_uso = cc.text_input("Unidad Uso", value=mp_row['unidad_medida'])
-                if st.form_submit_button("➕ Añadir"):
-                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", 
-                              {'pid':pid, 'mid':int(mp_row['id']), 'c':cant, 'u':u_uso})
+            mps_list = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
+            with st.form("add_rec_f"):
+                c1, c2, c3 = st.columns([3,1,1])
+                m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
+                m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
+                can = c2.number_input("Cant.", format="%.4f")
+                u_u = c3.text_input("Unidad", value=m_r['unidad_medida'])
+                if st.form_submit_button("➕"):
+                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", {'pid':pid, 'mid':int(m_r['id']), 'c':can, 'u':u_u})
                     st.rerun()
             
-            receta_act = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-            st.dataframe(receta_act, hide_index=True, use_container_width=True)
-            if st.button("🗑️ Limpiar Receta"):
-                run_query("DELETE FROM recetas WHERE producto_id=:pid", {'pid':pid}); st.rerun()
-
+            curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
+            st.dataframe(curr_rec, use_container_width=True, hide_index=True)
 # --- TAB 5: FICHA TÉCNICA (DETALLE EXCEL) ---
 with tabs[4]:
     st.header("🔎 Ficha Técnica de Costeo")
