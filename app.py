@@ -14,7 +14,7 @@ DB_HOST = "aws-1-us-east-1.pooler.supabase.com"
 DB_NAME = "postgres"
 DB_USER = "postgres.nzlysybivtiumentgpvi"
 DB_PORT = "6543"
-DB_PASS = "TU_CONTRASEÑA_AQUI" # <--- ¡PON TU CONTRASEÑA AQUÍ!
+DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡PON TU CONTRASEÑA AQUÍ!
 
 try:
     encoded_password = urllib.parse.quote_plus(DB_PASS)
