@@ -104,45 +104,243 @@ st.title("☁️ ERP Perfumería")
 
 tabs = st.tabs(["👥 Nóminas", "💰 Costos Fijos", "🌿 Materias Primas", "📦 Fábrica (Prod)", "🔎 Ficha Técnica", "⚙️ Ajustes"])
 
-# --- TAB 1: NÓMINAS ---
+# TAB 1: NÓMINAS
+
+# ------------------------------------------------------------------
+
 with tabs[0]:
+
     st.header("Configuración de Personal")
+
     c1, c2, c3 = st.columns(3)
+
+    
+
     def render_nomina_form(titulo, tabla, key_prefix):
+
         with st.container(border=True):
+
             st.subheader(titulo)
+
             try:
+
+                # Query seguro
+
                 col_emp = "num_operarios" if tabla == 'config_mod' else "num_empleados"
-                df = get_data(f"SELECT * FROM {tabla} WHERE id=1")
+
+                cols = f"salario_base, p_prestaciones, {col_emp}"
+
+                if tabla == 'config_mod': cols += ", horas_mes"
+
+                
+
+                df = get_data(f"SELECT {cols} FROM {tabla} WHERE id=1")
+
+                
+
                 if not df.empty:
+
                     data = df.iloc[0]
+
                     with st.form(f"form_{key_prefix}"):
+
                         s = st.number_input("Salario", value=float(data['salario_base']))
+
                         p = st.number_input("% Prestaciones", value=float(data['p_prestaciones']))
+
                         n = st.number_input("Nº Personas", value=int(data[col_emp]))
+
+                        
+
+                        h = 0.0
+
+                        if tabla == 'config_mod':
+
+                            h = st.number_input("Horas/Mes", value=float(data['horas_mes']))
+
+
+
                         if st.form_submit_button("Guardar"):
-                            run_query(f"UPDATE {tabla} SET salario_base=:s, p_prestaciones=:p, {col_emp}=:n WHERE id=1", {'s':s, 'p':p, 'n':n})
+
+                            if tabla == 'config_mod':
+
+                                run_query(f"UPDATE {tabla} SET salario_base=:s, p_prestaciones=:p, num_operarios=:n, horas_mes=:h WHERE id=1", {'s':s, 'p':p, 'n':n, 'h':h})
+
+                            else:
+
+                                run_query(f"UPDATE {tabla} SET salario_base=:s, p_prestaciones=:p, num_empleados=:n WHERE id=1", {'s':s, 'p':p, 'n':n})
+
                             st.rerun()
-            except: pass
+
+                else:
+
+                    st.warning("⚠️ Datos vacíos. Recarga la página para auto-reparar.")
+
+            except Exception as e: st.error(f"Error DB: {e}")
+
+
+
     with c1: render_nomina_form("🏢 Admin", "config_admin", "adm")
+
     with c2: render_nomina_form("🛍️ Ventas", "config_ventas", "ven")
+
     with c3: render_nomina_form("🏭 Producción", "config_mod", "mod")
 
-# --- TAB 2: COSTOS FIJOS ---
-with tabs[1]:
-    st.header("Matriz de Costos Fijos")
-    try:
-        df_man = get_data("SELECT id, concepto, total_mensual, p_admin, p_ventas, p_prod FROM costos_fijos ORDER BY id")
-        df_show = df_man.copy()
-        ed_df = st.data_editor(df_show, disabled=["id"], num_rows="dynamic", key="cf_ed")
-        if st.button("💾 Guardar Matriz"):
-            # Lógica de guardado simplificada para brevedad
-            for _, r in ed_df.iterrows():
-                if pd.isna(r['id']): run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)", {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
-                else: run_query("UPDATE costos_fijos SET concepto=:c, total_mensual=:t, p_admin=:pa, p_ventas=:pv, p_prod=:pp WHERE id=:id", {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod'], 'id':r['id']})
-            st.rerun()
-    except: pass
 
+
+# --- TAB 2: COSTOS FIJOS (RESTAURADO CON TOTALES) ---
+
+with tabs[1]:
+
+    st.header("Matriz de Costos Fijos")
+
+    
+
+    with st.expander("📂 Cargar Gastos (CSV)"):
+
+        with st.form("csv_cf", clear_on_submit=True):
+
+            f = st.file_uploader("CSV", type="csv")
+
+            borrar = st.checkbox("Borrar tabla antes de cargar", value=False)
+
+            if st.form_submit_button("Cargar") and f:
+
+                if borrar: run_query("TRUNCATE TABLE costos_fijos RESTART IDENTITY")
+
+                df = pd.read_csv(f)
+
+                for _, r in df.iterrows():
+
+                    run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
+
+                              {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
+
+                st.success("Cargado"); st.rerun()
+
+
+
+    try:
+
+        df_man = get_data("SELECT id, concepto, total_mensual, p_admin, p_ventas, p_prod FROM costos_fijos ORDER BY id")
+
+        
+
+        # Lógica de Filas Auto de Nóminas
+
+        filas_auto = []
+
+        adm = get_data("SELECT salario_base, p_prestaciones, num_empleados FROM config_admin WHERE id=1").iloc[0]
+
+        t_adm = float(adm['salario_base'] * adm['num_empleados'])
+
+        filas_auto.append({'id': -1, 'concepto': '⚡ Nómina: Salarios Admin', 'total_mensual': t_adm, 'p_admin': 100, 'p_ventas': 0, 'p_prod': 0})
+
+        filas_auto.append({'id': -2, 'concepto': '⚡ Nómina: Prestaciones Admin', 'total_mensual': t_adm*(adm['p_prestaciones']/100), 'p_admin': 100, 'p_ventas': 0, 'p_prod': 0})
+
+        
+
+        ven = get_data("SELECT salario_base, p_prestaciones, num_empleados FROM config_ventas WHERE id=1").iloc[0]
+
+        t_ven = float(ven['salario_base'] * ven['num_empleados'])
+
+        filas_auto.append({'id': -3, 'concepto': '⚡ Nómina: Salarios Ventas', 'total_mensual': t_ven, 'p_admin': 0, 'p_ventas': 100, 'p_prod': 0})
+
+        filas_auto.append({'id': -4, 'concepto': '⚡ Nómina: Prestaciones Ventas', 'total_mensual': t_ven*(ven['p_prestaciones']/100), 'p_admin': 0, 'p_ventas': 100, 'p_prod': 0})
+
+
+
+        df_show = pd.concat([df_man, pd.DataFrame(filas_auto)], ignore_index=True)
+
+        ed_df = st.data_editor(df_show, disabled=["id"], num_rows="dynamic", key="cf_ed", column_config={"total_mensual": st.column_config.NumberColumn(format="Q%.2f")})
+
+        
+
+        if st.button("💾 Guardar Matriz"):
+
+            ids_now = set()
+
+            for _, r in ed_df.iterrows():
+
+                if r['id'] >= 0:
+
+                    ids_now.add(r['id'])
+
+                    run_query("UPDATE costos_fijos SET concepto=:c, total_mensual=:t, p_admin=:pa, p_ventas=:pv, p_prod=:pp WHERE id=:id",
+
+                            {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod'], 'id':r['id']})
+
+                elif pd.isna(r['id']):
+
+                    run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
+
+                            {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
+
+            
+
+            ids_old = set(df_man['id'].tolist())
+
+            to_del = list(ids_old - ids_now)
+
+            if to_del:
+
+                todel = tuple(to_del)
+
+                if len(to_del)==1: todel = f"({to_del[0]})"
+
+                run_query(f"DELETE FROM costos_fijos WHERE id IN {todel}")
+
+            st.success("Guardado"); st.rerun()
+
+
+
+        # --- SECCIÓN DE TOTALES RESTAURADA ---
+
+        ed_df['M_Admin'] = ed_df['total_mensual'] * (ed_df['p_admin']/100)
+
+        ed_df['M_Ventas'] = ed_df['total_mensual'] * (ed_df['p_ventas']/100)
+
+        ed_df['M_Prod'] = ed_df['total_mensual'] * (ed_df['p_prod']/100)
+
+        
+
+        st.divider()
+
+        st.subheader("📊 Resumen Mensual")
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("TOTAL GASTOS", f"Q{ed_df['total_mensual'].sum():,.2f}")
+
+        c2.metric("Total Admin", f"Q{ed_df['M_Admin'].sum():,.2f}")
+
+        c3.metric("Total Ventas", f"Q{ed_df['M_Ventas'].sum():,.2f}")
+
+        c4.metric("Total Prod (CIF)", f"Q{ed_df['M_Prod'].sum():,.2f}")
+
+        
+
+        st.write("---")
+
+        u_prom = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+
+        u_base = st.number_input("Unidades Base", value=int(u_prom))
+
+        if u_base != u_prom:
+
+            run_query("UPDATE config_global SET unidades_promedio_mes=:u WHERE id=1", {'u':u_base})
+
+            st.rerun()
+
+            
+
+        cif_unit = ed_df['M_Prod'].sum() / u_base if u_base > 0 else 0
+
+        st.success(f"🎯 CIF Unitario: **Q{cif_unit:,.2f}**")
+
+
+
+    except Exception as e: st.error(f"Error cargando matriz: {e}")
 # --- TAB 3: MATERIAS PRIMAS ---
 with tabs[2]:
     st.header("Inventario Materia Prima")
