@@ -383,26 +383,49 @@ with tabs[3]:
                 run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p)", {'c':cod, 'n':nom, 't':tip, 'u':uds, 'p':prc})
                 st.rerun()
 
-    with c_right:
+with c_right:
         prods_list = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
         if not prods_list.empty:
             sel_p = st.selectbox("Editar Receta de:", prods_list['nombre'].tolist())
             pid = prods_list[prods_list['nombre']==sel_p]['codigo_barras'].values[0]
             
+            # --- Lógica de Unidades de Medida ---
             mps_list = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
+            
+            # 1. Obtenemos unidades únicas de la DB para el desplegable
+            unidades_db = get_data("SELECT DISTINCT unidad_medida FROM materias_primas WHERE unidad_medida IS NOT NULL")
+            opciones_u = unidades_db['unidad_medida'].tolist() if not unidades_db.empty else []
+            if "Nueva unidad..." not in opciones_u:
+                opciones_u.append("Nueva unidad...")
+
             with st.form("add_rec_f"):
+                st.subheader(f"🛠️ Editor: {sel_p}")
                 c1, c2, c3 = st.columns([3,1,1])
+                
                 m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
                 m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
                 can = c2.number_input("Cant.", format="%.4f")
-                u_u = c3.text_input("Unidad", value=m_r['unidad_medida'])
-                if st.form_submit_button("➕"):
-                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", {'pid':pid, 'mid':int(m_r['id']), 'c':can, 'u':u_u})
-                    st.rerun()
+                
+                # 2. Selector de unidades existentes
+                u_sel = c3.selectbox("Unidad", opciones_u, index=opciones_u.index(m_r['unidad_medida']) if m_r['unidad_medida'] in opciones_u else 0)
+                
+                # 3. Campo extra que solo se usa si eliges "Nueva unidad..."
+                nueva_u = st.text_input("Escribe la nueva unidad (solo si seleccionaste 'Nueva unidad...' arriba)", placeholder="Ej: Mililitros")
+                
+                if st.form_submit_button("➕ Añadir Ingrediente"):
+                    # Si eligió "Nueva unidad...", usamos el texto escrito, si no, la del selectbox
+                    unidad_final = nueva_u if u_sel == "Nueva unidad..." else u_sel
+                    
+                    if u_sel == "Nueva unidad..." and not nueva_u:
+                        st.error("Por favor, escribe el nombre de la nueva unidad.")
+                    else:
+                        run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", 
+                                  {'pid':pid, 'mid':int(m_r['id']), 'c':can, 'u':unidad_final})
+                        st.success(f"Añadido: {m_n}")
+                        st.rerun()
             
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-            st.dataframe(curr_rec, use_container_width=True, hide_index=True)
-# --- TAB 5: FICHA TÉCNICA (DETALLE EXCEL) ---
+            st.dataframe(curr_rec, use_container_width=True, hide_index=True)# --- TAB 5: FICHA TÉCNICA (DETALLE EXCEL) ---
 with tabs[4]:
     st.header("🔎 Ficha Técnica de Costeo")
     prods_f = get_data("SELECT * FROM productos")
