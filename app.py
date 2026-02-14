@@ -13,7 +13,7 @@ st.set_page_config(page_title="ERP Perfumería - Final", layout="wide")
 
 # 1. CREDENCIALES EXACTAS PARA EL POOLER
 # Nota: Si el host 'aws-0' no funciona, cámbialo a 'aws-1' según lo que diga Supabase
-DB_HOST = "aws-1-us-east-1.pooler.supabase.comm" 
+DB_HOST = "aws-1-us-east-1.pooler.supabase.com" 
 DB_NAME = "postgres"
 DB_USER = "postgres.nzlysybivtiumentgpvi" # <--- Usuario especial del pooler
 DB_PORT = "6543" 
