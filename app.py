@@ -3,21 +3,32 @@ import pandas as pd
 import sqlalchemy
 from sqlalchemy import create_engine, text
 import urllib.parse
+import time
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="ERP Perfumería - Final", layout="wide")
 
 # ==============================================================================
-# 🔐 CONEXIÓN A BASE DE DATOS
+# 🔐 CONEXIÓN A BASE DE DATOS (POOLER CORREGIDO)
 # ==============================================================================
-DB_HOST = "db.nzlysybivtiumentgpvi.supabase.co"
-DB_NAME = "postgres"
-DB_USER = "postgres.nzlysybivtiumentgpvi"
-DB_PORT = "5432"
-DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡PON TU CONTRASEÑA AQUÍ!
 
+# 1. DATOS CORREGIDOS (Extraídos de tus errores)
+# El Host del pooler suele ser aws-0 para US East, aunque tus errores decían aws-1.
+# Si aws-0 falla, prueba con aws-1.
+DB_HOST = "aws-0-us-east-1.pooler.supabase.com" 
+DB_NAME = "postgres"
+
+# ¡OJO AQUÍ! Para el puerto 6543, el usuario NO es solo "postgres".
+# Debe llevar el ID de tu proyecto al final.
+DB_USER = "postgres.nzlysybivtiumentgpvi" 
+
+DB_PORT = "6543" 
+DB_PASS = ".pJUb+(3pnYqBH1yhM" # <--- ¡IMPORTANTE: La nueva clave sin símbolos!
+
+# 2. CONSTRUCCIÓN DE URL BLINDADA
 try:
     encoded_password = urllib.parse.quote_plus(DB_PASS)
+    # Usamos postgresql+psycopg2 para mayor compatibilidad
     DB_URL = f"postgresql+psycopg2://{DB_USER}:{encoded_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
     @st.cache_resource
@@ -26,10 +37,22 @@ try:
         return create_engine(DB_URL, pool_pre_ping=True)
 
     engine = get_engine()
-except Exception as e:
-    st.error("❌ Error Crítico de Conexión. Revisa tu contraseña.")
-    st.stop()
+    
+    # Test de vida
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    st.sidebar.success("✅ Conectado (Vía Pooler 6543)")
 
+except Exception as e:
+    st.error("❌ Error de Conexión")
+    st.warning("Posibles causas:")
+    st.markdown("""
+    1. **Contraseña incorrecta:** Asegúrate de usar la que acabas de resetear.
+    2. **Bloqueo temporal:** Si dice 'Circuit breaker open', espera 20 mins y recarga.
+    3. **Host:** Si falla, intenta cambiar `aws-0` por `aws-1` en el código.
+    """)
+    st.code(str(e))
+    st.stop()
 # ==============================================================================
 # LÓGICA DE NEGOCIO Y AUTO-REPARACIÓN
 # ==============================================================================
