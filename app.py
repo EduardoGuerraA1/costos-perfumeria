@@ -425,43 +425,104 @@ with c_right:
                         st.rerun()
             
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-            st.dataframe(curr_rec, use_container_width=True, hide_index=True)# --- TAB 5: FICHA TÉCNICA (DETALLE EXCEL) ---
+            st.dataframe(curr_rec, use_container_width=True, hide_index=True)
+# --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON DESGLOSE DETALLADO) ---
 with tabs[4]:
     st.header("🔎 Ficha Técnica de Costeo")
-    prods_f = get_data("SELECT * FROM productos")
+    prods_f = get_data("SELECT * FROM productos ORDER BY nombre")
     sel_f = st.selectbox("Ver Ficha de:", [""] + prods_f['nombre'].tolist())
+    
     if sel_f:
         p_info = prods_f[prods_f['nombre']==sel_f].iloc[0]
-        rec_det = get_data("SELECT m.nombre, m.categoria, r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:c", {'c':p_info['codigo_barras']})
+        cod_p = p_info['codigo_barras']
+        
+        # Recuperar receta
+        rec_det = get_data("SELECT m.nombre, m.categoria, r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:c", {'c':cod_p})
         df_frag = rec_det[rec_det['categoria'].str.contains("FRAGANCIA|FORMULA", case=False, na=False)]
         df_otros = rec_det[~rec_det['categoria'].str.contains("FRAGANCIA|FORMULA", case=False, na=False)]
         
         st.markdown(f"### {p_info['nombre']}")
         c_f, c_o = st.columns(2)
-        tot_mp = 0
+        tot_formula = 0
+        tot_empaque = 0
+        
         with c_f:
             st.write("**🧪 FRAGANCIA / FÓRMULA**")
             sub_f = 0
             for _, r in df_frag.iterrows():
                 linea = r['cantidad'] * obtener_costo_convertido(r['mid'], r['unidad_uso'])
-                sub_f += linea; st.write(f"- {r['nombre']}: Q{linea:.4f}")
-            st.info(f"Subtotal Fórmula: Q{sub_f:.4f}"); tot_mp += sub_f
+                sub_f += linea
+                st.write(f"- {r['nombre']}: Q{linea:.4f}")
+            st.info(f"SUB-TOTAL FORMULA: Q{sub_f:.4f}")
+            tot_formula = sub_f
+
         with c_o:
             st.write("**📦 MATERIA PRIMA / EMPAQUE**")
             sub_o = 0
             for _, r in df_otros.iterrows():
                 linea = r['cantidad'] * obtener_costo_convertido(r['mid'], r['unidad_uso'])
-                sub_o += linea; st.write(f"- {r['nombre']}: Q{linea:.4f}")
-            st.info(f"Subtotal Empaque: Q{sub_o:.4f}"); tot_mp += sub_o
+                sub_o += linea
+                st.write(f"- {r['nombre']}: Q{linea:.4f}")
+            st.info(f"SUB-TOTAL MATERIA PRIMA: Q{sub_o:.4f}")
+            tot_empaque = sub_o
         
-        u_prom = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
-        cif_tot = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
-        c_u = (tot_mp / (p_info['unidades_por_lote'] if p_info['tipo_produccion'] == 'Lote' else 1)) + (float(cif_tot)/u_prom)
-        r1, r2, r3 = st.columns(3)
-        r1.metric("Costo Unitario", f"Q{c_u:.2f}")
-        r2.metric("Precio Venta", f"Q{p_info['precio_venta_sugerido']:.2f}")
-        r3.metric("Utilidad", f"Q{p_info['precio_venta_sugerido'] - c_u:.2f}")
+        st.divider()
 
+        # --- CÁLCULOS TÉCNICOS ---
+        u_div = p_info['unidades_por_lote'] if p_info['tipo_produccion'] == 'Lote' else 1
+        u_prom_base = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+        
+        # 1. Costo Variable Unitario
+        costo_variable_u = (tot_formula + tot_empaque) / u_div
+        
+        # 2. Mano de Obra Directa (MOD) por minuto
+        mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
+        t_mod_mensual = float(mod_cfg['salario_base'] * mod_cfg['num_operarios'] * (1 + mod_cfg['p_prestaciones']/100))
+        minutos_disponibles = float(mod_cfg['horas_mes'] * mod_cfg['num_operarios'] * 60)
+        costo_minuto = t_mod_mensual / minutos_disponibles if minutos_disponibles > 0 else 0
+        
+        # Tiempo de ciclo (si no existe la columna en DB, usamos el estándar de 5 min)
+        tiempo_ciclo = float(p_info.get('minutos_por_unidad', 5.0)) 
+        mod_u = tiempo_ciclo * costo_minuto
+        
+        # 3. Costos Fijos Unitarios (CIF)
+        cif_tot = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
+        c_fijos_u = float(cif_tot) / u_prom_base
+        
+        # 4. Gasto Operativo (Admin + Ventas)
+        gasto_op_tot = get_data("SELECT SUM(total_mensual * ((p_admin + p_ventas)/100)) FROM costos_fijos").iloc[0,0] or 0
+        gasto_op_u = float(gasto_op_tot) / u_prom_base
+        
+        # --- TOTALES FINALES ---
+        costo_total_u = costo_variable_u + mod_u + c_fijos_u
+        total_costos_gastos = costo_total_u + gasto_op_u
+        precio_venta = float(p_info['precio_venta_sugerido'])
+        utilidad = precio_venta - total_costos_gastos
+        margen = (utilidad / precio_venta * 100) if precio_venta > 0 else 0
+
+        # --- TABLA DE RESULTADOS ESTILO EXCEL ---
+        st.subheader("📊 Desglose Final de Costos y Utilidad")
+        
+        res_cols = st.columns(2)
+        with res_cols[0]:
+            st.write(f"**COSTO VARIABLE UNITARIO:** Q{costo_variable_u:,.2f}")
+            st.write(f"**MANO DE OBRA DIRECTA (MOD):** Q{mod_u:,.2f}")
+            st.write(f"**COSTOS FIJOS UNITARIOS:** Q{c_fijos_u:,.2f}")
+            st.markdown(f"### **COSTO TOTAL UNITARIO:** Q{costo_total_u:,.2f}")
+            st.write(f"**Tiempo de ciclo:** {tiempo_ciclo} min")
+            
+        with res_cols[1]:
+            st.write(f"**Gasto total Unitario (operativo promedio):** Q{gasto_op_u:,.2f}")
+            st.markdown(f"### **Total de costos y gastos:** Q{total_costos_gastos:,.2f}")
+            st.write(f"**PRECIO DE VENTA:** Q{precio_venta:,.2f}")
+            
+        st.divider()
+        
+        # KPIs Visuales
+        k1, k2, k3 = st.columns(3)
+        k1.metric("UTILIDAD POR UNIDAD", f"Q{utilidad:,.2f}", delta_color="normal")
+        k2.metric("MARGEN DE GANANCIA", f"{margen:.2f}%")
+        k3.metric("PUNTO DE EQUILIBRIO (Est.)", f"{int(total_costos_gastos / (precio_venta - costo_variable_u) * u_prom_base) if precio_venta > costo_variable_u else 0} uds")
 # --- TAB 6: AJUSTES (CONVERSIONES) ---
 with tabs[5]:
     st.header("⚙️ Ajustes y Conversiones")
