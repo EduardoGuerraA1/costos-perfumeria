@@ -66,21 +66,19 @@ def get_unidades_promedio():
     except: return 1
 
 def get_nomina_config(table_name):
-    # Definimos las columnas según la tabla
+    # Definimos las columnas según la tabla para evitar el error de nombres
     if table_name == 'config_mod':
-        # En producción se llama 'num_operarios', pero lo renombramos a 'num_empleados' para que el resto del código entienda
+        # TRUCO: Renombramos 'num_operarios' a 'num_empleados' en la consulta
         query = f"SELECT salario_base, p_prestaciones, num_operarios as num_empleados, horas_mes FROM {table_name} WHERE id=1"
     else:
-        # En admin y ventas se llama 'num_empleados'
+        # En admin y ventas ya se llama 'num_empleados'
         query = f"SELECT salario_base, p_prestaciones, num_empleados FROM {table_name} WHERE id=1"
     
     try:
         df = get_data(query)
         if not df.empty: 
             return df.iloc[0]
-    except Exception as e: 
-        # Esto te ayudará a ver errores en la consola si pasan
-        print(f"Error leyendo {table_name}: {e}")
+    except Exception as e:
         pass
     return None
 
@@ -139,13 +137,13 @@ with tabs[0]:
                     run_query("UPDATE config_mod SET salario_base=:s, p_prestaciones=:p, num_operarios=:n, horas_mes=:h WHERE id=1", {'s':s, 'p':p, 'n':n, 'h':h})
                     st.rerun()
 
-# ------------------------------------------------------------------
-# TAB 2: MATRIZ COSTOS
+# # ------------------------------------------------------------------
+# TAB 2: MATRIZ COSTOS (CORREGIDO CON TOTALES)
 # ------------------------------------------------------------------
 with tabs[1]:
     st.header("Matriz de Costos Fijos")
     
-    # CSV Upload
+    # Carga CSV
     with st.expander("📂 Cargar Gastos (CSV)"):
         f = st.file_uploader("CSV: concepto,total_mensual,p_admin,p_ventas,p_prod", type="csv")
         if f:
@@ -157,10 +155,10 @@ with tabs[1]:
                 st.success("Cargado"); st.rerun()
             except Exception as e: st.error(e)
 
-    # Datos Manuales
+    # 1. Datos Manuales
     df_man = get_data("SELECT id, concepto, total_mensual, p_admin, p_ventas, p_prod FROM costos_fijos ORDER BY id")
     
-    # Datos Automáticos (Calculados)
+    # 2. Datos Automáticos (Nóminas)
     adm = get_nomina_config('config_admin')
     ven = get_nomina_config('config_ventas')
     
@@ -179,8 +177,10 @@ with tabs[1]:
 
     df_show = pd.concat([df_man, pd.DataFrame(filas_auto)], ignore_index=True)
     
+    # EDITOR
     ed_df = st.data_editor(df_show, disabled=["id"], num_rows="dynamic", key="cf_ed", column_config={"total_mensual": st.column_config.NumberColumn(format="Q%.2f")})
     
+    # BOTÓN GUARDAR
     if st.button("💾 Guardar Matriz"):
         ids_now = set()
         for _, r in ed_df.iterrows():
@@ -192,28 +192,41 @@ with tabs[1]:
                 run_query("INSERT INTO costos_fijos (concepto, total_mensual, p_admin, p_ventas, p_prod) VALUES (:c, :t, :pa, :pv, :pp)",
                           {'c':r['concepto'], 't':r['total_mensual'], 'pa':r['p_admin'], 'pv':r['p_ventas'], 'pp':r['p_prod']})
         
-        # Delete
+        # Eliminar
         ids_old = set(df_man['id'].tolist())
         to_del = list(ids_old - ids_now)
         if to_del:
-            # Fix para tupla de 1 elemento
             todel_str = tuple(to_del)
             if len(to_del) == 1: todel_str = f"({to_del[0]})"
             run_query(f"DELETE FROM costos_fijos WHERE id IN {todel_str}")
         
         st.success("Guardado"); st.rerun()
 
-    # Totales
+    # --- CÁLCULO DE TOTALES (AQUÍ ESTÁ LO QUE FALTABA) ---
+    # Calculamos los montos reales en memoria para mostrar
+    ed_df['M_Admin'] = ed_df['total_mensual'] * (ed_df['p_admin']/100)
+    ed_df['M_Ventas'] = ed_df['total_mensual'] * (ed_df['p_ventas']/100)
     ed_df['M_Prod'] = ed_df['total_mensual'] * (ed_df['p_prod']/100)
-    st.divider()
     
+    st.divider()
+    st.subheader("📊 Resumen Mensual")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("TOTAL GASTOS", f"Q{ed_df['total_mensual'].sum():,.2f}")
+    c2.metric("Total Admin", f"Q{ed_df['M_Admin'].sum():,.2f}")
+    c3.metric("Total Ventas", f"Q{ed_df['M_Ventas'].sum():,.2f}")
+    c4.metric("Total Prod (CIF)", f"Q{ed_df['M_Prod'].sum():,.2f}")
+    
+    st.write("---")
+    
+    # UNIDADES BASE
     u_prom = st.number_input("Unidades Base", value=get_unidades_promedio())
     if u_prom != get_unidades_promedio():
         run_query("UPDATE config_global SET unidades_promedio_mes=:u WHERE id=1", {'u':u_prom})
         st.rerun()
     
+    # CIF UNITARIO
     cif_unit = ed_df['M_Prod'].sum() / u_prom if u_prom > 0 else 0
-    st.info(f"🎯 CIF Unitario: **Q{cif_unit:,.2f}**")
+    st.success(f"🎯 CIF Unitario: **Q{cif_unit:,.2f}**")
 
 # ------------------------------------------------------------------
 # TAB 3: MATERIAS PRIMAS
