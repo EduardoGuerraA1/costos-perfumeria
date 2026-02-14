@@ -66,14 +66,22 @@ def get_unidades_promedio():
     except: return 1
 
 def get_nomina_config(table_name):
-    # Función auxiliar para traer config de nóminas de forma segura
-    cols = "salario_base, p_prestaciones, num_empleados"
-    if table_name == 'config_mod': cols += ", horas_mes"
+    # Definimos las columnas según la tabla
+    if table_name == 'config_mod':
+        # En producción se llama 'num_operarios', pero lo renombramos a 'num_empleados' para que el resto del código entienda
+        query = f"SELECT salario_base, p_prestaciones, num_operarios as num_empleados, horas_mes FROM {table_name} WHERE id=1"
+    else:
+        # En admin y ventas se llama 'num_empleados'
+        query = f"SELECT salario_base, p_prestaciones, num_empleados FROM {table_name} WHERE id=1"
     
     try:
-        df = get_data(f"SELECT {cols} FROM {table_name} WHERE id=1")
-        if not df.empty: return df.iloc[0]
-    except: pass
+        df = get_data(query)
+        if not df.empty: 
+            return df.iloc[0]
+    except Exception as e: 
+        # Esto te ayudará a ver errores en la consola si pasan
+        print(f"Error leyendo {table_name}: {e}")
+        pass
     return None
 
 # ==============================================================================
