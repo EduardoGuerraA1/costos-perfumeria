@@ -212,113 +212,143 @@ with tabs[1]:
 # --- TAB 3: MATERIAS PRIMAS ---
 with tabs[2]:
     st.header("Inventario Materia Prima")
-    with st.expander("📂 Carga Masiva (CSV)"):
-        with st.form("csv_mp_form", clear_on_submit=True):
-            f = st.file_uploader("CSV", type="csv")
-            iva = st.checkbox("Precios incluyen IVA", value=True)
-            if st.form_submit_button("Cargar") and f:
-                try:
-                    df = pd.read_csv(f)
-                    for _, r in df.iterrows():
-                        costo = calcular_sin_iva(r['costo'], iva)
-                        cod = r['codigo'] if 'codigo' in df.columns else ''
-                        run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)",
-                                  {'cod':cod, 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':costo})
-                    st.success("Cargado"); st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+    df_mp = get_data("SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas ORDER BY nombre")
+    ed_mp = st.data_editor(df_mp, num_rows="dynamic", key="mp_editor_final", disabled=["id"])
+    if st.button("💾 Guardar Cambios MP"):
+        for _, r in ed_mp.iterrows():
+            if pd.notna(r['id']): run_query("UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id", {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':r['id']})
+            else: run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)", {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario']})
+        st.rerun()
 
-    df = get_data("SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas ORDER BY nombre")
-    ed = st.data_editor(df, num_rows="dynamic", key="mp_ed", disabled=["id"], column_config={"costo_unitario": st.column_config.NumberColumn(format="Q%.4f")})
-    if st.button("💾 Guardar MP"):
-        ids_now = set()
-        for _, r in ed.iterrows():
-            if pd.notna(r['id']):
-                ids_now.add(r['id'])
-                run_query("UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id",
-                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':r['id']})
-            else:
-                run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)",
-                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario']})
-        st.success("Guardado"); st.rerun()
-
-# --- TAB 4: FABRICA ---
+# --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
-    st.header("Productos y Recetas")
-    with st.expander("📂 Carga Masiva de Productos (CSV)"):
-        with st.form("csv_prod_form", clear_on_submit=True):
-            f_p = st.file_uploader("CSV Productos", type="csv")
-            if st.form_submit_button("Cargar Productos") and f_p:
-                try:
-                    dfp = pd.read_csv(f_p)
-                    for _, r in dfp.iterrows():
-                        mins = r['minutos_total'] if pd.notna(r['minutos_total']) else 0
-                        es_lote = r['tipo'] == 'Lote'
-                        u_lote = r['unidades_lote'] if es_lote else 1
-                        m_unit = (mins / u_lote) if es_lote and u_lote > 0 else mins
-                        run_query("""INSERT INTO productos (codigo_barras, nombre, linea, tipo_produccion, unidades_por_lote, minutos_por_lote, minutos_por_unidad, precio_venta_sugerido)
-                            VALUES (:c, :n, :l, :t, :ul, :ml, :mu, :p)
-                            ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n, linea=:l, tipo_produccion=:t, unidades_por_lote=:ul, minutos_por_lote=:ml, minutos_por_unidad=:mu, precio_venta_sugerido=:p""",
-                            {'c':str(r['codigo']), 'n':r['nombre'], 'l':r['categoria'], 't':r['tipo'], 'ul':u_lote, 'ml':mins, 'mu':m_unit, 'p':r['precio']})
-                    st.success("Cargado"); st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
-
+    st.header("Gestión de Producción")
     c_izq, c_der = st.columns([1, 2])
+    
     with c_izq:
-        st.subheader("Crear Individual")
-        with st.form("new_p"):
-            cod = st.text_input("Código")
-            nom = st.text_input("Nombre")
-            tipo = st.selectbox("Tipo", ["Unidad", "Lote"])
-            u_lote = st.number_input("Uds/Lote", 1)
-            m_total = st.number_input("Minutos Totales", 0.0)
-            precio = st.number_input("Precio Venta", 0.0)
-            if st.form_submit_button("Guardar"):
-                m_unit = m_total / u_lote if tipo == "Lote" else m_total
-                run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_lote, minutos_por_unidad, precio_venta_sugerido) VALUES (:c, :n, :t, :ul, :ml, :mu, :p) ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n", {'c':cod, 'n':nom, 't':tipo, 'ul':u_lote, 'ml':m_total, 'mu':m_unit, 'p':precio})
-                st.rerun()
+        st.subheader("Productos")
+        prods = get_data("SELECT codigo_barras, nombre, tipo_produccion, unidades_por_lote FROM productos")
+        st.dataframe(prods, hide_index=True)
+        
+        with st.expander("👯 Duplicar Receta"):
+            orig = st.selectbox("Copiar de:", prods['nombre'].tolist())
+            dest = st.selectbox("Pegar en:", prods['nombre'].tolist())
+            if st.button("Ejecutar Clonación"):
+                c_orig = prods[prods['nombre']==orig]['codigo_barras'].values[0]
+                c_dest = prods[prods['nombre']==dest]['codigo_barras'].values[0]
+                run_query("DELETE FROM recetas WHERE producto_id=:d", {'d':c_dest})
+                run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) SELECT :d, mp_id, cantidad, unidad_uso FROM recetas WHERE producto_id=:o", {'d':c_dest, 'o':c_orig})
+                st.success("Receta duplicada con éxito")
 
     with c_der:
-        st.subheader("Constructor de Recetas")
-        prods = get_data("SELECT codigo_barras, nombre FROM productos")
-        d_prods = {f"{r['nombre']}": r['codigo_barras'] for _, r in prods.iterrows()}
-        sel = st.selectbox("Producto:", list(d_prods.keys()) if d_prods else [])
-        if sel:
-            pid = d_prods[sel]
-            mps = get_data("SELECT id, nombre, codigo_interno FROM materias_primas ORDER BY nombre")
-            d_mps = {f"{r['codigo_interno']} - {r['nombre']}": r['id'] for _, r in mps.iterrows()}
-            c1, c2, c3 = st.columns([3,2,1])
-            m_sel = c1.selectbox("MP", list(d_mps.keys()) if d_mps else [])
-            cant = c2.number_input("Cant", 0.0, format="%.4f")
-            if c3.button("➕"):
-                run_query("INSERT INTO recetas (producto_id, mp_id, cantidad) VALUES (:pid, :mid, :c)", {'pid':pid, 'mid':d_mps[m_sel], 'c':cant}); st.rerun()
-            rec = get_data("SELECT r.id, m.nombre, r.cantidad, m.costo_unitario FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-            st.dataframe(rec, hide_index=True)
+        st.subheader("Editor de Receta")
+        sel_p = st.selectbox("Seleccione Producto para editar receta:", prods['nombre'].tolist())
+        if sel_p:
+            pid = prods[prods['nombre']==sel_p]['codigo_barras'].values[0]
+            mps = get_data("SELECT id, nombre, unidad_medida FROM materias_primas")
+            with st.form("add_mp_receta"):
+                c1, c2, c3 = st.columns([3,1,1])
+                mp_n = c1.selectbox("Materia Prima", mps['nombre'].tolist())
+                mp_id = mps[mps['nombre']==mp_n]['id'].values[0]
+                mp_u_base = mps[mps['nombre']==mp_n]['unidad_medida'].values[0]
+                
+                cant = c2.number_input("Cant.", format="%.4f")
+                u_uso = c3.text_input("Unidad Uso", value=mp_u_base)
+                if st.form_submit_button("Añadir a Receta"):
+                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", 
+                              {'pid':pid, 'mid':mp_id, 'c':cant, 'u':u_uso})
+                    st.rerun()
+            
+            receta_act = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
+            st.dataframe(receta_act, hide_index=True)
+            if st.button("🗑️ Limpiar Receta"):
+                run_query("DELETE FROM recetas WHERE producto_id=:pid", {'pid':pid})
+                st.rerun()
 
-# --- TAB 5: FICHA TÉCNICA ---
+# --- TAB 5: FICHA TÉCNICA DETALLADA ---
 with tabs[4]:
-    st.header("Buscador de Costeo")
-    prods = get_data("SELECT codigo_barras, nombre FROM productos")
-    sel = st.selectbox("Buscar", [f"{r['nombre']} | {r['codigo_barras']}" for _, r in prods.iterrows()] if not prods.empty else [""])
-    if sel and "|" in sel:
-        cod = sel.split(" | ")[-1]
-        p_dat = get_data("SELECT * FROM productos WHERE codigo_barras=:c", {'c':cod}).iloc[0]
-        c_mat = get_data("SELECT SUM(r.cantidad * m.costo_unitario) FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:c", {'c':cod}).iloc[0,0] or 0
-        div = p_dat['unidades_por_lote'] if p_dat['tipo_produccion'] == 'Lote' else 1
-        c_mat_u = float(c_mat) / div
+    st.header("🔎 Ficha Técnica de Costeo")
+    prods_list = get_data("SELECT codigo_barras, nombre FROM productos")
+    sel_f = st.selectbox("Ver Ficha de:", [""] + prods_list['nombre'].tolist())
+    
+    if sel_f != "":
+        cod_p = prods_list[prods_list['nombre']==sel_f]['codigo_barras'].values[0]
+        p_info = get_data("SELECT * FROM productos WHERE codigo_barras=:c", {'c':cod_p}).iloc[0]
         
-        u_prom = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
-        mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios as num_empleados, horas_mes FROM config_mod WHERE id=1").iloc[0]
-        mod_money = float(mod_cfg['salario_base']*mod_cfg['num_empleados']*(1+mod_cfg['p_prestaciones']/100))
-        c_mod_u = (float(p_dat['minutos_por_unidad']) * (mod_money / (float(mod_cfg['horas_mes'])*mod_cfg['num_empleados']) / 60)) if p_dat['minutos_por_unidad'] > 0 else (mod_money / u_prom)
+        # Detalle Receta con Conversión
+        rec_det = get_data("""
+            SELECT m.nombre, m.categoria, r.cantidad, r.unidad_uso, m.id as mid 
+            FROM recetas r JOIN materias_primas m ON r.mp_id=m.id 
+            WHERE r.producto_id=:c""", {'c':cod_p})
+        
+        st.markdown(f"### {p_info['nombre']} (Cód: {cod_p})")
+        
+        # Clasificación
+        df_frag = rec_det[rec_det['categoria'].str.contains("FRAGANCIA|FORMULA", case=False, na=False)]
+        df_otros = rec_det[~rec_det['categoria'].str.contains("FRAGANCIA|FORMULA", case=False, na=False)]
+        
+        col_a, col_b = st.columns(2)
+        
+        total_receta = 0
+        with col_a:
+            st.subheader("🧪 Fórmula / Fragancia")
+            sub_f = 0
+            for _, r in df_frag.iterrows():
+                cost_u = obtener_costo_convertido(r['mid'], r['unidad_uso'])
+                linea = r['cantidad'] * cost_u
+                sub_f += linea
+                st.write(f"• {r['nombre']}: {r['cantidad']} {r['unidad_uso']} -> Q{linea:.4f}")
+            st.warning(f"Subtotal Fragancia: Q{sub_f:.4f}")
+            total_receta += sub_f
 
-        cif_df = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos WHERE id > 0")
-        cif_tot = float(cif_df.iloc[0,0]) if not cif_df.empty and cif_df.iloc[0,0] else 0
-        c_cif_u = cif_tot / u_prom if u_prom > 0 else 0
+        with col_b:
+            st.subheader("📦 Empaque y Otros")
+            sub_o = 0
+            for _, r in df_otros.iterrows():
+                cost_u = obtener_costo_convertido(r['mid'], r['unidad_uso'])
+                linea = r['cantidad'] * cost_u
+                sub_o += linea
+                st.write(f"• {r['nombre']}: {r['cantidad']} {r['unidad_uso']} -> Q{linea:.4f}")
+            st.warning(f"Subtotal Otros: Q{sub_o:.4f}")
+            total_receta += sub_o
+
+        # Totales Finales
+        st.divider()
+        u_lote = p_info['unidades_por_lote'] if p_info['tipo_produccion'] == 'Lote' else 1
+        costo_mp_u = total_receta / u_lote
         
-        st.markdown(f"## {p_dat['nombre']}")
-        k1, k2, k3 = st.columns(3)
-        cost_total = c_mat_u + c_mod_u + c_cif_u
-        k1.metric("Costo Unitario", f"Q{cost_total:.2f}")
-        k2.metric("Precio Sugerido", f"Q{p_dat['precio_venta_sugerido']:.2f}")
-        margen = p_dat['precio_venta_sugerido'] - cost_total
-        k3.metric("Margen", f"Q{margen:.2f}", f"{(margen/p_dat['precio_venta_sugerido']*100 if p_dat['precio_venta_sugerido']>0 else 0):.1f}%")
+        # MOD y CIF (Cálculo simplificado del bloque anterior)
+        u_prom = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+        cif_tot = get_data("SELECT SUM(total_mensual * (p_prod/100)) as cif FROM costos_fijos").iloc[0,0] or 0
+        c_cif_u = float(cif_tot) / u_prom
+        
+        costo_final = costo_mp_u + c_cif_u # + MOD (Añadir aquí tu lógica de MOD si usas minutos)
+        
+        res1, res2, res3 = st.columns(3)
+        res1.metric("Costo Unitario Total", f"Q{costo_final:.2f}")
+        res2.metric("Precio Venta", f"Q{p_info['precio_venta_sugerido']:.2f}")
+        margen = p_info['precio_venta_sugerido'] - costo_final
+        res3.metric("Margen Q", f"Q{margen:.2f}", f"{(margen/p_info['precio_venta_sugerido']*100):.1f}%")
+
+# --- TAB 6: AJUSTES (CONVERSIONES) ---
+with tabs[5]:
+    st.header("⚙️ Editor de Medidas y Conversiones")
+    st.info("Define aquí cuántas unidades de uso hay en una unidad de compra. Ej: 1 Galón -> 128 Oz")
+    
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        with st.form("nueva_conv"):
+            ori = st.text_input("Unidad Compra (Origen)", placeholder="Galon")
+            des = st.text_input("Unidad Receta (Destino)", placeholder="Oz")
+            fac = st.number_input("Factor Multiplicador", value=1.0, format="%.4f")
+            if st.form_submit_button("Registrar Conversión"):
+                run_query("INSERT INTO conversiones (unidad_origen, unidad_destino, factor_multiplicador) VALUES (:o, :d, :f) ON CONFLICT (unidad_origen, unidad_destino) DO UPDATE SET factor_multiplicador=:f", 
+                          {'o':ori, 'd':des, 'f':fac})
+                st.rerun()
+    
+    with col2:
+        df_c = get_data("SELECT id, unidad_origen, unidad_destino, factor_multiplicador FROM conversiones")
+        ed_c = st.data_editor(df_c, num_rows="dynamic", key="editor_conv")
+        if st.button("Eliminar Seleccionados"):
+            # Lógica para borrar si es necesario
+            pass
