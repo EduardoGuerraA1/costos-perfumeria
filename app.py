@@ -371,12 +371,27 @@ with tabs[3]:
         with st.form("csv_p_f", clear_on_submit=True):
             f_p = st.file_uploader("Subir CSV Productos", type="csv")
             if st.form_submit_button("Procesar Productos") and f_p:
-                df_p = pd.read_csv(f_p)
-                for _, r in df_p.iterrows():
-                    run_query("INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, precio_venta_sugerido) VALUES (:c, :n, :t, :u, :p) ON CONFLICT (codigo_barras) DO UPDATE SET nombre=:n",
-                              {'c':str(r['codigo']), 'n':r['nombre'], 't':r['tipo'], 'u':r['unidades_lote'], 'p':r['precio']})
-                st.success("Cargado"); st.rerun()
-
+                try:
+                    df_p = pd.read_csv(f_p)
+                    for _, r in df_p.iterrows():
+                        # Usamos ON CONFLICT para actualizar los minutos_por_unidad de los existentes
+                        run_query("""
+                            INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido)
+                            VALUES (:c, :n, :t, :u, :m, :p)
+                            ON CONFLICT (codigo_barras) DO UPDATE SET 
+                            nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
+                        """, {
+                            'c': str(r['codigo']), 
+                            'n': r['nombre'], 
+                            't': r['tipo'], 
+                            'u': r['unidades_lote'], 
+                            'm': float(r['tiempo_ciclo']), # Captura el nuevo dato
+                            'p': r['precio']
+                        })
+                    st.success("Productos actualizados con éxito")
+                    st.rerun()
+                except Exception as e: 
+                    st.error(f"Error en el formato del CSV: {e}")
     c_left, c_right = st.columns([1, 2])
 with c_left:
         st.subheader("🆕 Crear Individual")
