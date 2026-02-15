@@ -341,20 +341,64 @@ with tabs[1]:
 
 
     except Exception as e: st.error(f"Error cargando matriz: {e}")
-# --- TAB 3: MATERIAS PRIMAS ---
+# --- TAB 3: MATERIAS PRIMAS (CON BUSCADOR Y SEGURIDAD) ---
 with tabs[2]:
-    st.header("Inventario Materia Prima")
-    df_mps = get_data("SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas ORDER BY nombre")
-    ed_mp = st.data_editor(df_mps, num_rows="dynamic", key="mp_ed_safe", disabled=["id"])
-    if st.button("💾 Guardar Cambios MP"):
-        for _, r in ed_mp.iterrows():
-            if 'id' in r and pd.notna(r['id']): 
-                run_query("UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id", 
-                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':r['id']})
-            else: 
-                run_query("INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) VALUES (:cod, :n, :c, :u, :p)", 
-                          {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 'u':r['unidad_medida'], 'p':r['costo_unitario']})
-        st.rerun()
+    st.header("🌿 Inventario Materia Prima")
+    
+    # --- 1. BUSCADOR DINÁMICO ---
+    busqueda = st.text_input("🔍 Buscar por código o nombre:", placeholder="Ej: REPH... o Alcohol")
+    
+    # Recuperamos los datos de la DB
+    query_base = "SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas"
+    df_mps = get_data(f"{query_base} ORDER BY nombre")
+    
+    # Filtramos el DataFrame localmente según la búsqueda
+    if busqueda:
+        df_filtrado = df_mps[
+            df_mps['nombre'].str.contains(busqueda, case=False, na=False) | 
+            df_mps['codigo_interno'].str.contains(busqueda, case=False, na=False)
+        ]
+    else:
+        df_filtrado = df_mps
+
+    # --- 2. EDITOR DE DATOS ---
+    ed_mp = st.data_editor(
+        df_filtrado, 
+        num_rows="dynamic", 
+        key="mp_ed_v2", 
+        disabled=["id"],
+        use_container_width=True
+    )
+    
+    # --- 3. LOGICA DE ACTUALIZACIÓN CON CONFIRMACIÓN ---
+    st.write("---")
+    col_save, col_check = st.columns([1, 2])
+    
+    with col_check:
+        confirmar = st.checkbox("✅ Confirmo que los precios y datos son correctos.")
+    
+    with col_save:
+        if st.button("💾 Sincronizar Cambios", disabled=not confirmar, type="primary"):
+            try:
+                for _, r in ed_mp.iterrows():
+                    id_actual = r.get('id')
+                    
+                    if pd.notna(id_actual): 
+                        # ACTUALIZACIÓN: Registro existente
+                        run_query("""UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, 
+                                     categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id""", 
+                                  {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 
+                                   'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':id_actual})
+                    else: 
+                        # INSERCIÓN: Nuevo registro
+                        run_query("""INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) 
+                                     VALUES (:cod, :n, :c, :u, :p)""", 
+                                  {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 
+                                   'u':r['unidad_medida'], 'p':r['costo_unitario']})
+                st.success("¡Base de datos actualizada con éxito!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error al sincronizar: {e}")
 
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
@@ -458,6 +502,21 @@ with c_right:
             
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
             st.dataframe(curr_rec, use_container_width=True, hide_index=True)
+
+if not curr_rec.empty:
+                with st.expander("🗑️ Quitar un ingrediente de la receta"):
+                    # Creamos un diccionario para identificar el nombre con su ID único de fila
+                    dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] 
+                                   for _, row in curr_rec.iterrows()}
+                    
+                    item_sel = st.selectbox("Seleccione el ingrediente a eliminar:", 
+                                            options=list(dict_borrar.keys()), key="del_item_receta")
+                    
+                    if st.button("Confirmar Eliminación del Ítem", type="primary"):
+                        id_a_borrar = dict_borrar[item_sel]
+                        run_query("DELETE FROM recetas WHERE id = :rid", {"rid": id_a_borrar})
+                        st.success("Ingrediente eliminado de la receta.")
+                        st.rerun()
 # --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON DESGLOSE DETALLADO) ---
 with tabs[4]:
     st.header("🔎 Ficha Técnica de Costeo")
