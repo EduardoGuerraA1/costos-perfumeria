@@ -103,12 +103,22 @@ def check_and_seed_data():
 
 check_and_seed_data()
 
+def obtener_volumen_referencia():
+    """Retorna la producción real del mes o el promedio manual si no hay registros."""
+    mes_act = pd.to_datetime("today").month
+    anio_act = pd.to_datetime("today").year
+    real = get_data("SELECT SUM(cantidad_producida) FROM registro_produccion WHERE EXTRACT(MONTH FROM fecha) = :m AND EXTRACT(YEAR FROM fecha) = :a", {'m': mes_act, 'a': anio_act}).iloc[0,0]
+    
+    if real and real > 0:
+        return float(real), "Real (Mes Actual)"
+    manual = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+    return float(manual), "Teórico (Promedio)"
 # ==============================================================================
 # INTERFAZ
 # ==============================================================================
 st.title("☁️ ERP Perfumería")
 
-tabs = st.tabs(["👥 Nóminas", "💰 Costos Fijos", "🌿 Materias Primas", "📦 Fábrica (Prod)", "🔎 Ficha Técnica", "⚙️ Ajustes"])
+tabs = st.tabs(["👥 Nóminas", "💰 Costos Fijos", "🌿 Materias Primas", "📦 Fábrica (Prod)", "🔎 Ficha Técnica", "⚙️ Ajustes", "🚀 Producción Diaria"])
 
 # TAB 1: NÓMINAS
 
