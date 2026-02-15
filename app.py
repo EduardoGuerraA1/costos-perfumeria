@@ -504,18 +504,12 @@ with c_right:
             st.dataframe(curr_rec, use_container_width=True, hide_index=True)
 
 if not curr_rec.empty:
-                with st.expander("🗑️ Quitar un ingrediente de la receta"):
-                    # Creamos un diccionario para identificar el nombre con su ID único de fila
-                    dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] 
-                                   for _, row in curr_rec.iterrows()}
+                with st.expander("🗑️ Quitar un ingrediente de esta receta"):
+                    dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] for _, row in curr_rec.iterrows()}
+                    item_sel = st.selectbox("Seleccione para eliminar:", options=list(dict_borrar.keys()), key="del_local")
                     
-                    item_sel = st.selectbox("Seleccione el ingrediente a eliminar:", 
-                                            options=list(dict_borrar.keys()), key="del_item_receta")
-                    
-                    if st.button("Confirmar Eliminación del Ítem", type="primary"):
-                        id_a_borrar = dict_borrar[item_sel]
-                        run_query("DELETE FROM recetas WHERE id = :rid", {"rid": id_a_borrar})
-                        st.success("Ingrediente eliminado de la receta.")
+                    if st.button("Confirmar Eliminación", type="primary", key="btn_del_local"):
+                        run_query("DELETE FROM recetas WHERE id = :rid", {"rid": dict_borrar[item_sel]})
                         st.rerun()
 # --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON DESGLOSE DETALLADO) ---
 with tabs[4]:
