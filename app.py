@@ -62,12 +62,18 @@ def calcular_sin_iva(monto, tiene_iva):
     return monto / 1.12 if (tiene_iva and monto > 0) else monto
 
 def obtener_costo_convertido(mp_id, unidad_destino):
-    """Calcula el costo unitario basado en la conversión de unidades."""
-    df_mp = get_data("SELECT costo_unitario, unidad_medida FROM materias_primas WHERE id=:id", {'id': mp_id})
+    """Calcula el costo neto (sin IVA) y aplica conversiones de unidad."""
+    df_mp = get_data("SELECT costo_unitario, unidad_medida, tiene_iva FROM materias_primas WHERE id=:id", {'id': mp_id})
     if df_mp.empty: return 0.0
     
+    # 1. Obtenemos el costo base
     costo_base = float(df_mp.iloc[0]['costo_unitario'])
     unidad_base = df_mp.iloc[0]['unidad_medida']
+    tiene_iva = bool(df_mp.iloc[0]['tiene_iva'])
+    
+    # 2. APLICAMOS LÓGICA DE IVA (Si tiene, lo quitamos: Q / 1.12)
+    if tiene_iva:
+        costo_base = costo_base / 1.12
     
     # Si la unidad es la misma, no hay conversión
     if unidad_base == unidad_destino or unidad_destino is None:
@@ -341,18 +347,18 @@ with tabs[1]:
 
 
     except Exception as e: st.error(f"Error cargando matriz: {e}")
-# --- TAB 3: MATERIAS PRIMAS (CON BUSCADOR Y SEGURIDAD) ---
+# --- TAB 3: MATERIAS PRIMAS (CON IVA Y ELIMINACIÓN) ---
 with tabs[2]:
     st.header("🌿 Inventario Materia Prima")
     
-    # --- 1. BUSCADOR DINÁMICO ---
+    # 1. BUSCADOR DINÁMICO
     busqueda = st.text_input("🔍 Buscar por código o nombre:", placeholder="Ej: REPH... o Alcohol")
     
-    # Recuperamos los datos de la DB
-    query_base = "SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario FROM materias_primas"
+    # Recuperamos los datos de la DB (Añadimos 'tiene_iva')
+    query_base = "SELECT id, codigo_interno, nombre, categoria, unidad_medida, costo_unitario, tiene_iva FROM materias_primas"
     df_mps = get_data(f"{query_base} ORDER BY nombre")
+    ids_antes = set(df_mps['id'].dropna().unique()) # Guardamos los IDs actuales
     
-    # Filtramos el DataFrame localmente según la búsqueda
     if busqueda:
         df_filtrado = df_mps[
             df_mps['nombre'].str.contains(busqueda, case=False, na=False) | 
@@ -361,45 +367,64 @@ with tabs[2]:
     else:
         df_filtrado = df_mps
 
-    # --- 2. EDITOR DE DATOS ---
+    # 2. EDITOR DE DATOS
+    # Configuramos la columna IVA para que sea un checkbox
     ed_mp = st.data_editor(
         df_filtrado, 
         num_rows="dynamic", 
-        key="mp_ed_v2", 
+        key="mp_ed_v3", 
         disabled=["id"],
-        use_container_width=True
+        use_container_width=True,
+        column_config={
+            "tiene_iva": st.column_config.CheckboxColumn("¿Tiene IVA?", default=False),
+            "costo_unitario": st.column_config.NumberColumn("Costo (Q)", format="%.4f")
+        }
     )
     
-    # --- 3. LOGICA DE ACTUALIZACIÓN CON CONFIRMACIÓN ---
+    # 3. LOGICA DE ACTUALIZACIÓN Y ELIMINACIÓN
     st.write("---")
     col_save, col_check = st.columns([1, 2])
     
     with col_check:
-        confirmar = st.checkbox("✅ Confirmo que los precios y datos son correctos.")
+        confirmar = st.checkbox("✅ Confirmo que los precios (sin IVA si aplica) y datos son correctos.")
     
     with col_save:
         if st.button("💾 Sincronizar Cambios", disabled=not confirmar, type="primary"):
             try:
+                # A. Detectar y eliminar filas borradas
+                ids_ahora = set(ed_mp['id'].dropna().unique())
+                ids_a_eliminar = ids_antes - ids_ahora
+                
+                if ids_a_eliminar:
+                    for id_del in ids_a_eliminar:
+                        run_query("DELETE FROM materias_primas WHERE id = :id", {'id': id_del})
+
+                # B. Actualizar o Insertar filas
                 for _, r in ed_mp.iterrows():
                     id_actual = r.get('id')
                     
+                    # Lógica de IVA: Si tiene IVA, lo guardamos ya neto (Costo / 1.12)
+                    # Opcional: Puedes elegir guardar el bruto y calcularlo solo al ver recetas.
+                    # Aquí lo guardaremos bruto pero con el flag para procesarlo después.
+                    costo = float(r['costo_unitario'])
+                    t_iva = bool(r['tiene_iva'])
+                    
                     if pd.notna(id_actual): 
-                        # ACTUALIZACIÓN: Registro existente
                         run_query("""UPDATE materias_primas SET codigo_interno=:cod, nombre=:n, 
-                                     categoria=:c, unidad_medida=:u, costo_unitario=:p WHERE id=:id""", 
+                                     categoria=:c, unidad_medida=:u, costo_unitario=:p, tiene_iva=:iva 
+                                     WHERE id=:id""", 
                                   {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 
-                                   'u':r['unidad_medida'], 'p':r['costo_unitario'], 'id':id_actual})
+                                   'u':r['unidad_medida'], 'p':costo, 'iva':t_iva, 'id':id_actual})
                     else: 
-                        # INSERCIÓN: Nuevo registro
-                        run_query("""INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario) 
-                                     VALUES (:cod, :n, :c, :u, :p)""", 
+                        run_query("""INSERT INTO materias_primas (codigo_interno, nombre, categoria, unidad_medida, costo_unitario, tiene_iva) 
+                                     VALUES (:cod, :n, :c, :u, :p, :iva)""", 
                                   {'cod':r['codigo_interno'], 'n':r['nombre'], 'c':r['categoria'], 
-                                   'u':r['unidad_medida'], 'p':r['costo_unitario']})
-                st.success("¡Base de datos actualizada con éxito!")
+                                   'u':r['unidad_medida'], 'p':costo, 'iva':t_iva})
+                
+                st.success("¡Base de datos sincronizada y limpia!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al sincronizar: {e}")
-
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
