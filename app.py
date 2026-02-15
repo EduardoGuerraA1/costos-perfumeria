@@ -711,59 +711,98 @@ with tabs[5]:
             run_query("INSERT INTO conversiones (unidad_origen, unidad_destino, factor_multiplicador) VALUES (:o, :d, :f) ON CONFLICT (unidad_origen, unidad_destino) DO UPDATE SET factor_multiplicador=:f", {'o':o, 'd':d, 'f':f})
             st.rerun()
     st.dataframe(get_data("SELECT * FROM conversiones"), use_container_width=True)
-# --- TAB 7: REGISTRO DE PRODUCCIÓN (MÓDULO 3.1) ---
-# Agrégala al inicio en st.tabs(["...", "🚀 Producción Diaria"])
+# --- TAB 7: REGISTRO DE PRODUCCIÓN (MÓDULO 3.1 - CARGA MASIVA Y ANULACIÓN) ---
 with tabs[6]:
-    st.header("🚀 Registro de Producción Diaria")
+    st.header("🚀 Panel de Producción Diaria")
     
-    col_f1, col_f2 = st.columns([1, 2])
+    col_entrada, col_hist_prod = st.columns([1.2, 1])
     
-    with col_f1:
-        st.subheader("📝 Nuevo Registro")
-        # Obtenemos líneas y productos actualizados
-        lineas_prod = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
-        prods_prod = get_data("SELECT codigo_barras, nombre, linea FROM productos ORDER BY nombre")
+    with col_entrada:
+        st.subheader("📥 Registro Masivo por Línea")
         
-        with st.form("form_registro_diario", clear_on_submit=True):
-            fecha_p = st.date_input("Fecha de Producción")
-            # Selector de Línea
-            linea_p = st.selectbox("Línea", lineas_prod['nombre'].tolist() if not lineas_prod.empty else ["General"])
-            
-            # Filtramos productos solo de esa línea para evitar errores
-            prods_filtrados = prods_prod[prods_prod['linea'] == linea_p]
-            if prods_filtrados.empty: prods_filtrados = prods_prod # Si no hay, mostrar todos
-            
-            p_sel = st.selectbox("Producto", prods_filtrados['nombre'].tolist())
-            cod_p = prods_prod[prods_prod['nombre'] == p_sel]['codigo_barras'].values[0]
-            
-            cant_p = st.number_input("Cantidad Producida (Unidades)", min_value=1, step=1)
-            
-            if st.form_submit_button("✅ Registrar Producción"):
-                run_query("""
-                    INSERT INTO registro_produccion (fecha, linea_nombre, producto_codigo, cantidad_producida)
-                    VALUES (:f, :l, :c, :q)
-                """, {'f': fecha_p, 'l': linea_p, 'c': cod_p, 'q': cant_p})
-                st.success(f"Registradas {cant_p} unidades de {p_sel}")
-                st.rerun()
+        # 1. Configuración de la sesión de carga
+        c_f1, c_f2 = st.columns(2)
+        fecha_registro = c_f1.date_input("Fecha de Trabajo", value=pd.to_datetime("today"))
+        
+        lineas_oficiales = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
+        linea_sel = c_f2.selectbox("Seleccione Línea para cargar:", lineas_oficiales['nombre'].tolist() if not lineas_oficiales.empty else ["General"])
 
-    with col_f2:
-        st.subheader("📅 Historial Reciente")
-        historial = get_data("""
-            SELECT r.fecha, r.linea_nombre as linea, p.nombre as producto, r.cantidad_producida as cantidad
+        # 2. Obtenemos los productos de esa línea
+        prods_de_linea = get_data("SELECT codigo_barras, nombre FROM productos WHERE linea = :l ORDER BY nombre", {'l': linea_sel})
+        
+        if not prods_de_linea.empty:
+            st.write(f"✍️ Ingrese las unidades fabricadas para la línea **{linea_sel}**:")
+            
+            # Preparamos el editor: Nombre del producto y una columna vacía para cantidad
+            df_carga = prods_de_linea.copy()
+            df_carga['unidades_producidas'] = 0
+            
+            # Editor de datos optimizado
+            ed_carga = st.data_editor(
+                df_carga,
+                hide_index=True,
+                use_container_width=True,
+                disabled=["codigo_barras", "nombre"], # Solo se edita la cantidad
+                column_config={
+                    "unidades_producidas": st.column_config.NumberColumn("Cantidad (Uds)", min_value=0, step=1, format="%d")
+                },
+                key=f"editor_prod_{linea_sel}"
+            )
+            
+            if st.button("💾 Guardar Producción de la Línea", type="primary"):
+                registros_nuevos = ed_carga[ed_carga['unidades_producidas'] > 0]
+                
+                if not registros_nuevos.empty:
+                    try:
+                        for _, row in registros_nuevos.iterrows():
+                            run_query("""
+                                INSERT INTO registro_produccion (fecha, linea_nombre, producto_codigo, cantidad_producida)
+                                VALUES (:f, :l, :c, :q)
+                            """, {
+                                'f': fecha_registro, 'l': linea_sel, 
+                                'c': row['codigo_barras'], 'q': int(row['unidades_producidas'])
+                            })
+                        st.success(f"✅ Se han registrado {len(registros_nuevos)} productos para la línea {linea_sel}.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error al guardar: {e}")
+                else:
+                    st.warning("No se ingresaron cantidades mayores a cero.")
+        else:
+            st.info(f"No hay productos asignados a la línea '{linea_sel}'.")
+
+    with col_hist_prod:
+        st.subheader("📋 Historial y Anulaciones")
+        
+        # Filtro de fecha para el historial
+        f_hist = st.date_input("Ver producción del día:", value=pd.to_datetime("today"))
+        
+        historial_dia = get_data("""
+            SELECT r.id, r.linea_nombre as linea, p.nombre as producto, r.cantidad_producida as cantidad
             FROM registro_produccion r
             JOIN productos p ON r.producto_codigo = p.codigo_barras
-            ORDER BY r.fecha DESC, r.id DESC LIMIT 15
-        """)
-        st.dataframe(historial, use_container_width=True, hide_index=True)
+            WHERE r.fecha = :f
+            ORDER BY r.id DESC
+        """, {'f': f_hist})
         
-        # --- Lógica de Acumulado Mensual (Módulo 3.1) ---
-        st.divider()
-        mes_actual = fecha_p.month
-        anio_actual = fecha_p.year
-        acumulado = get_data("""
-            SELECT SUM(cantidad_producida) as total 
-            FROM registro_produccion 
-            WHERE EXTRACT(MONTH FROM fecha) = :m AND EXTRACT(YEAR FROM fecha) = :a
-        """, {'m': mes_actual, 'a': anio_actual}).iloc[0,0] or 0
-        
-        st.metric("Total Producido este Mes", f"{int(acumulado):,} unidades")
+        if not historial_dia.empty:
+            st.dataframe(historial_dia, use_container_width=True, hide_index=True)
+            
+            # --- FUNCIÓN DE ELIMINACIÓN (LOCAL) ---
+            with st.expander("🗑️ Anular Registro Erróneo"):
+                opciones_del = {f"ID {row['id']} - {row['producto']} ({row['cantidad']} uds)": row['id'] 
+                               for _, row in historial_dia.iterrows()}
+                
+                registro_a_borrar = st.selectbox("Seleccione el registro a eliminar:", options=list(opciones_del.keys()))
+                
+                if st.button("Confirmar Anulación", type="primary"):
+                    id_del = opciones_del[registro_a_borrar]
+                    run_query("DELETE FROM registro_produccion WHERE id = :id", {'id': id_del})
+                    st.success("Registro anulado correctamente.")
+                    st.rerun()
+        else:
+            st.write("No hay registros para la fecha seleccionada.")
+
+        # KPI de producción del día
+        total_dia = historial_dia['cantidad'].sum() if not historial_dia.empty else 0
+        st.metric("Total Unidades (Día)", f"{int(total_dia):,} uds")
