@@ -403,6 +403,7 @@ with tabs[2]:
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
     st.header("Gestión de Producción")
+    
     try:
         mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
         t_mod_mensual = float(mod_cfg['salario_base'] * mod_cfg['num_operarios'] * (1 + mod_cfg['p_prestaciones']/100))
@@ -411,6 +412,7 @@ with tabs[3]:
         st.info(f"⏱️ **Costo de Mano de Obra por Minuto:** Q{costo_minuto:,.4f}")
     except:
         st.warning("Configure la nómina de producción para calcular el costo por minuto.")
+    
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
         with st.form("csv_p_f", clear_on_submit=True):
             f_p = st.file_uploader("Subir CSV Productos", type="csv")
@@ -418,7 +420,6 @@ with tabs[3]:
                 try:
                     df_p = pd.read_csv(f_p)
                     for _, r in df_p.iterrows():
-                        # Usamos ON CONFLICT para actualizar los minutos_por_unidad de los existentes
                         run_query("""
                             INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido)
                             VALUES (:c, :n, :t, :u, :m, :p)
@@ -429,27 +430,27 @@ with tabs[3]:
                             'n': r['nombre'], 
                             't': r['tipo'], 
                             'u': r['unidades_lote'], 
-                            'm': float(r['tiempo_ciclo']), # Captura el nuevo dato
+                            'm': float(r['tiempo_ciclo']),
                             'p': r['precio']
                         })
                     st.success("Productos actualizados con éxito")
                     st.rerun()
                 except Exception as e: 
                     st.error(f"Error en el formato del CSV: {e}")
+
     c_left, c_right = st.columns([1, 2])
-with c_left:
+
+    with c_left:
         st.subheader("🆕 Crear Individual")
         with st.form("new_p_safe"):
             cod = st.text_input("Código")
             nom = st.text_input("Nombre")
             tip = st.selectbox("Tipo", ["Unidad", "Lote"])
             uds = st.number_input("Uds/Lote", 1)
-            # NUEVO CAMPO: Tiempo de ciclo
             ciclo = st.number_input("Tiempo de ciclo (Minutos por unidad)", value=5.0, step=0.1)
             prc = st.number_input("Precio Venta", 0.0)
             
             if st.form_submit_button("💾 Guardar"):
-                # Query actualizado para incluir minutos_por_unidad
                 run_query("""
                     INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido) 
                     VALUES (:c, :n, :t, :u, :m, :p)
@@ -459,16 +460,13 @@ with c_left:
                 st.success(f"Producto {nom} guardado.")
                 st.rerun()
 
-with c_right:
+    with c_right:
         prods_list = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
         if not prods_list.empty:
             sel_p = st.selectbox("Editar Receta de:", prods_list['nombre'].tolist())
             pid = prods_list[prods_list['nombre']==sel_p]['codigo_barras'].values[0]
             
-            # --- Lógica de Unidades de Medida ---
             mps_list = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
-            
-            # 1. Obtenemos unidades únicas de la DB para el desplegable
             unidades_db = get_data("SELECT DISTINCT unidad_medida FROM materias_primas WHERE unidad_medida IS NOT NULL")
             opciones_u = unidades_db['unidad_medida'].tolist() if not unidades_db.empty else []
             if "Nueva unidad..." not in opciones_u:
@@ -477,37 +475,43 @@ with c_right:
             with st.form("add_rec_f"):
                 st.subheader(f"🛠️ Editor: {sel_p}")
                 c1, c2, c3 = st.columns([3,1,1])
-                
                 m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
                 m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
                 can = c2.number_input("Cant.", format="%.4f")
-                
-                # 2. Selector de unidades existentes
                 u_sel = c3.selectbox("Unidad", opciones_u, index=opciones_u.index(m_r['unidad_medida']) if m_r['unidad_medida'] in opciones_u else 0)
-                
-                # 3. Campo extra que solo se usa si eliges "Nueva unidad..."
                 nueva_u = st.text_input("Escribe la nueva unidad (solo si seleccionaste 'Nueva unidad...' arriba)", placeholder="Ej: Mililitros")
                 
                 if st.form_submit_button("➕ Añadir Ingrediente"):
-                    # Si eligió "Nueva unidad...", usamos el texto escrito, si no, la del selectbox
                     unidad_final = nueva_u if u_sel == "Nueva unidad..." else u_sel
-                    
                     if u_sel == "Nueva unidad..." and not nueva_u:
                         st.error("Por favor, escribe el nombre de la nueva unidad.")
                     else:
                         run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", 
                                   {'pid':pid, 'mid':int(m_r['id']), 'c':can, 'u':unidad_final})
-                        st.success(f"Añadido: {m_n}")
                         st.rerun()
             
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
             st.dataframe(curr_rec, use_container_width=True, hide_index=True)
 
-if not curr_rec.empty:
+            # --- BOTÓN VISTA PREVIA ---
+            if st.button("👁️ Vista Previa del Costo"):
+                with st.spinner("Calculando..."):
+                    rec_p = get_data("SELECT r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
+                    costo_mat = sum(row['cantidad'] * obtener_costo_convertido(row['mid'], row['unidad_uso']) for _, row in rec_p.iterrows())
+                    p_p = get_data("SELECT unidades_por_lote, tipo_produccion, minutos_por_unidad FROM productos WHERE codigo_barras=:pid", {'pid':pid}).iloc[0]
+                    u_div = p_p['unidades_por_lote'] if p_p['tipo_produccion'] == 'Lote' else 1
+                    mod_p = float(p_p['minutos_por_unidad']) * costo_minuto
+                    u_prom_p = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+                    cif_tot_p = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
+                    cif_p = float(cif_tot_p) / u_prom_p if u_prom_p > 0 else 0
+                    total_p = (costo_mat / u_div) + mod_p + cif_p
+                st.success(f"**Costo Unitario Estimado: Q{total_p:,.2f}**")
+                st.caption(f"Materiales: Q{(costo_mat/u_div):.2f} | MOD: Q{mod_p:.2f} | CIF: Q{cif_p:.2f}")
+
+            if not curr_rec.empty:
                 with st.expander("🗑️ Quitar un ingrediente de esta receta"):
                     dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] for _, row in curr_rec.iterrows()}
                     item_sel = st.selectbox("Seleccione para eliminar:", options=list(dict_borrar.keys()), key="del_local")
-                    
                     if st.button("Confirmar Eliminación", type="primary", key="btn_del_local"):
                         run_query("DELETE FROM recetas WHERE id = :rid", {"rid": dict_borrar[item_sel]})
                         st.rerun()
