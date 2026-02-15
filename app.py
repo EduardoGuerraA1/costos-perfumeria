@@ -698,3 +698,59 @@ with tabs[5]:
             run_query("INSERT INTO conversiones (unidad_origen, unidad_destino, factor_multiplicador) VALUES (:o, :d, :f) ON CONFLICT (unidad_origen, unidad_destino) DO UPDATE SET factor_multiplicador=:f", {'o':o, 'd':d, 'f':f})
             st.rerun()
     st.dataframe(get_data("SELECT * FROM conversiones"), use_container_width=True)
+# --- TAB 7: REGISTRO DE PRODUCCIÓN (MÓDULO 3.1) ---
+# Agrégala al inicio en st.tabs(["...", "🚀 Producción Diaria"])
+with tabs[6]:
+    st.header("🚀 Registro de Producción Diaria")
+    
+    col_f1, col_f2 = st.columns([1, 2])
+    
+    with col_f1:
+        st.subheader("📝 Nuevo Registro")
+        # Obtenemos líneas y productos actualizados
+        lineas_prod = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
+        prods_prod = get_data("SELECT codigo_barras, nombre, linea FROM productos ORDER BY nombre")
+        
+        with st.form("form_registro_diario", clear_on_submit=True):
+            fecha_p = st.date_input("Fecha de Producción")
+            # Selector de Línea
+            linea_p = st.selectbox("Línea", lineas_prod['nombre'].tolist() if not lineas_prod.empty else ["General"])
+            
+            # Filtramos productos solo de esa línea para evitar errores
+            prods_filtrados = prods_prod[prods_prod['linea'] == linea_p]
+            if prods_filtrados.empty: prods_filtrados = prods_prod # Si no hay, mostrar todos
+            
+            p_sel = st.selectbox("Producto", prods_filtrados['nombre'].tolist())
+            cod_p = prods_prod[prods_prod['nombre'] == p_sel]['codigo_barras'].values[0]
+            
+            cant_p = st.number_input("Cantidad Producida (Unidades)", min_value=1, step=1)
+            
+            if st.form_submit_button("✅ Registrar Producción"):
+                run_query("""
+                    INSERT INTO registro_produccion (fecha, linea_nombre, producto_codigo, cantidad_producida)
+                    VALUES (:f, :l, :c, :q)
+                """, {'f': fecha_p, 'l': linea_p, 'c': cod_p, 'q': cant_p})
+                st.success(f"Registradas {cant_p} unidades de {p_sel}")
+                st.rerun()
+
+    with col_f2:
+        st.subheader("📅 Historial Reciente")
+        historial = get_data("""
+            SELECT r.fecha, r.linea_nombre as linea, p.nombre as producto, r.cantidad_producida as cantidad
+            FROM registro_produccion r
+            JOIN productos p ON r.producto_codigo = p.codigo_barras
+            ORDER BY r.fecha DESC, r.id DESC LIMIT 15
+        """)
+        st.dataframe(historial, use_container_width=True, hide_index=True)
+        
+        # --- Lógica de Acumulado Mensual (Módulo 3.1) ---
+        st.divider()
+        mes_actual = fecha_p.month
+        anio_actual = fecha_p.year
+        acumulado = get_data("""
+            SELECT SUM(cantidad_producida) as total 
+            FROM registro_produccion 
+            WHERE EXTRACT(MONTH FROM fecha) = :m AND EXTRACT(YEAR FROM fecha) = :a
+        """, {'m': mes_actual, 'a': anio_actual}).iloc[0,0] or 0
+        
+        st.metric("Total Producido este Mes", f"{int(acumulado):,} unidades")
