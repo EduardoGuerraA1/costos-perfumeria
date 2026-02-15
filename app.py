@@ -710,7 +710,7 @@ with tabs[5]:
             run_query("INSERT INTO conversiones (unidad_origen, unidad_destino, factor_multiplicador) VALUES (:o, :d, :f) ON CONFLICT (unidad_origen, unidad_destino) DO UPDATE SET factor_multiplicador=:f", {'o':o, 'd':d, 'f':f})
             st.rerun()
     st.dataframe(get_data("SELECT * FROM conversiones"), use_container_width=True)
-# --- TAB 7: REGISTRO DE PRODUCCIÓN (CARGA MASIVA POR LÍNEA Y ANULACIÓN) ---
+# --- TAB 7: REGISTRO DE PRODUCCIÓN (MÓDULO 3.1 COMPLETO) ---
 with tabs[6]:
     st.header("🚀 Panel de Producción Diaria")
     
@@ -719,66 +719,69 @@ with tabs[6]:
     with col_entrada:
         st.subheader("📥 Registro Masivo por Línea")
         
-        # 1. Configuración de la sesión
+        # 1. Configuración
         c_f1, c_f2 = st.columns(2)
-        fecha_registro = c_f1.date_input("Fecha de Trabajo", value=pd.to_datetime("today"))
+        fecha_registro = c_f1.date_input("Fecha de Trabajo", value=pd.to_datetime("today"), key="fecha_prod")
         
-        # Obtenemos las líneas oficiales del catálogo
+        # Recuperamos líneas oficiales
         lineas_db = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
-        linea_sel = c_f2.selectbox("Seleccione Línea para trabajar:", lineas_db['nombre'].tolist() if not lineas_db.empty else ["General"])
+        linea_sel = c_f2.selectbox("Seleccione Línea para trabajar:", 
+                                   lineas_db['nombre'].tolist() if not lineas_db.empty else ["General"],
+                                   key="sel_linea_prod")
 
-        # 2. FILTRADO REAL: Solo productos que pertenezcan a la línea seleccionada
-        prods_de_linea = get_data("SELECT codigo_barras, nombre FROM productos WHERE linea = :l ORDER BY nombre", {'l': linea_sel})
+        # 2. FILTRADO DINÁMICO: Solo productos de la línea seleccionada
+        prods_filtrados = get_data("SELECT codigo_barras, nombre FROM productos WHERE linea = :l ORDER BY nombre", {'l': linea_sel})
         
-        if not prods_de_linea.empty:
-            st.info(f"📋 Completando producción para: **{linea_sel}**")
+        if not prods_filtrados.empty:
+            st.info(f"📋 Productos encontrados para **{linea_sel}**: {len(prods_filtrados)}")
             
-            # Preparamos la tabla de carga (vaciamos cantidades a 0)
-            df_carga = prods_de_linea.copy()
-            df_carga['cantidad'] = 0 
+            # Preparamos tabla para ingreso masivo
+            df_hoja_trabajo = prods_filtrados.copy()
+            df_hoja_trabajo['unidades'] = 0 # Columna para llenar
             
-            # EDITOR MASIVO: Permite llenar múltiples productos a la vez
+            # EL EDITOR MASIVO: Permite llenar varios productos a la vez
             ed_carga = st.data_editor(
-                df_carga,
+                df_hoja_trabajo,
                 hide_index=True,
                 use_container_width=True,
-                disabled=["codigo_barras", "nombre"], # Solo editamos la columna 'cantidad'
+                disabled=["codigo_barras", "nombre"], # Solo se edita 'unidades'
                 column_config={
-                    "cantidad": st.column_config.NumberColumn("Unidades Producidas", min_value=0, step=1, format="%d")
+                    "unidades": st.column_config.NumberColumn("Unidades Producidas", min_value=0, step=1)
                 },
-                key=f"editor_v3_{linea_sel}" # Key dinámica para limpiar al cambiar de línea
+                key=f"editor_batch_{linea_sel}" # Key única para que refresque al cambiar línea
             )
             
-            if st.button("💾 Guardar Producción de la Línea", type="primary"):
-                # Procesamos solo filas donde se ingresó producción
-                a_registrar = ed_carga[ed_carga['cantidad'] > 0]
+            if st.button("💾 Guardar Todo el Lote", type="primary"):
+                # Filtramos solo los productos donde se puso una cantidad > 0
+                datos_a_guardar = ed_carga[ed_carga['unidades'] > 0]
                 
-                if not a_registrar.empty:
+                if not datos_a_guardar.empty:
                     try:
-                        for _, r in a_registrar.iterrows():
+                        for _, r in datos_a_guardar.iterrows():
                             run_query("""
                                 INSERT INTO registro_produccion (fecha, linea_nombre, producto_codigo, cantidad_producida)
                                 VALUES (:f, :l, :c, :q)
                             """, {
                                 'f': fecha_registro, 'l': linea_sel, 
-                                'c': r['codigo_barras'], 'q': int(r['cantidad'])
+                                'c': r['codigo_barras'], 'q': int(r['unidades'])
                             })
-                        st.success(f"✅ Registrados {len(a_registrar)} productos de la línea {linea_sel}.")
+                        st.success(f"✅ Se registraron {len(datos_a_guardar)} productos con éxito.")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error técnico al guardar: {e}")
+                        st.error(f"Error al guardar: {e}")
                 else:
-                    st.warning("No has ingresado cantidades mayores a cero todavía.")
+                    st.warning("Ingrese cantidades en la tabla antes de guardar.")
         else:
-            # Si la línea no tiene productos, mostramos advertencia clara
-            st.warning(f"⚠️ La línea '{linea_sel}' no tiene productos asociados en el catálogo.")
+            # Si la categoría no tiene productos, aparece en blanco/aviso
+            st.warning(f"No hay productos registrados en la línea '{linea_sel}'.")
 
     with col_hist_prod:
-        st.subheader("📋 Historial y Anulaciones")
+        st.subheader("📋 Historial y Gráfico")
         
-        # Filtro de fecha para auditar
-        f_ver = st.date_input("Ver producción del día:", value=fecha_registro)
+        # Filtro para ver qué se hizo
+        f_ver = st.date_input("Ver producción del día:", value=fecha_registro, key="fecha_hist")
         
+        # Query para el historial y para el gráfico
         historial_dia = get_data("""
             SELECT r.id, p.nombre as producto, r.cantidad_producida as cantidad, r.linea_nombre as linea
             FROM registro_produccion r
@@ -788,19 +791,25 @@ with tabs[6]:
         """, {'f': f_ver})
         
         if not historial_dia.empty:
-            st.dataframe(historial_dia, use_container_width=True, hide_index=True)
+            # --- NUEVO: GRÁFICO DE BARRAS ---
+            st.write("**Producción por Línea (Hoy)**")
+            df_chart = historial_dia.groupby('linea')['cantidad'].sum().reset_index()
+            st.bar_chart(df_chart.set_index('linea'))
             
-            # --- MÓDULO DE ANULACIÓN ---
-            with st.expander("🗑️ Anular un registro (Solo administradores)"):
-                # Creamos lista para elegir qué registro borrar del historial
-                opciones_del = {f"{row['producto']} ({row['cantidad']} uds) - ID: {row['id']}": row['id'] 
-                               for _, row in historial_dia.iterrows()}
+            # Tabla de historial
+            st.dataframe(historial_dia[['producto', 'cantidad', 'linea']], use_container_width=True, hide_index=True)
+            
+            # --- MÓDULO DE ELIMINACIÓN (CORREGIDO) ---
+            with st.expander("🗑️ Anular Registro del Día"):
+                opciones_anular = {f"{row['producto']} ({row['cantidad']} uds)": row['id'] 
+                                   for _, row in historial_dia.iterrows()}
                 
-                a_eliminar = st.selectbox("Seleccione el registro a anular:", options=list(opciones_del.keys()))
+                registro_sel = st.selectbox("Seleccione para eliminar:", options=list(opciones_anular.keys()))
                 
-                if st.button("Confirmar Eliminación", type="primary"):
-                    run_query("DELETE FROM registro_produccion WHERE id = :id", {'id': opciones_del[a_eliminar]})
-                    st.success("Registro eliminado del historial diario.")
+                if st.button("Confirmar Borrado", type="primary"):
+                    id_a_borrar = opciones_anular[registro_sel]
+                    run_query("DELETE FROM registro_produccion WHERE id = :id", {'id': id_a_borrar})
+                    st.success("Registro eliminado.")
                     st.rerun()
         else:
-            st.write("No se encontró producción registrada en esta fecha.")
+            st.write("Sin producción en esta fecha.")
