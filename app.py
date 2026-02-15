@@ -404,6 +404,7 @@ with tabs[2]:
 with tabs[3]:
     st.header("Gestión de Producción")
     
+    # --- VISUALIZACIÓN DE COSTO POR MINUTO ---
     try:
         mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
         t_mod_mensual = float(mod_cfg['salario_base'] * mod_cfg['num_operarios'] * (1 + mod_cfg['p_prestaciones']/100))
@@ -413,6 +414,7 @@ with tabs[3]:
     except:
         st.warning("Configure la nómina de producción para calcular el costo por minuto.")
     
+    # --- CARGA MASIVA CON COLUMNA "LINEA" ---
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
         with st.form("csv_p_f", clear_on_submit=True):
             f_p = st.file_uploader("Subir CSV Productos", type="csv")
@@ -421,30 +423,33 @@ with tabs[3]:
                     df_p = pd.read_csv(f_p)
                     for _, r in df_p.iterrows():
                         run_query("""
-                            INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido)
-                            VALUES (:c, :n, :t, :u, :m, :p)
+                            INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido, linea)
+                            VALUES (:c, :n, :t, :u, :m, :p, :l)
                             ON CONFLICT (codigo_barras) DO UPDATE SET 
-                            nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
+                            nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p, linea=:l
                         """, {
                             'c': str(r['codigo']), 
                             'n': r['nombre'], 
                             't': r['tipo'], 
                             'u': r['unidades_lote'], 
                             'm': float(r['tiempo_ciclo']),
-                            'p': r['precio']
+                            'p': r['precio'],
+                            'l': str(r['linea']) # Inyecta la línea desde el CSV
                         })
-                    st.success("Productos actualizados con éxito")
+                    st.success("Productos actualizados con éxito incluyendo clasificación por línea.")
                     st.rerun()
                 except Exception as e: 
                     st.error(f"Error en el formato del CSV: {e}")
 
     c_left, c_right = st.columns([1, 2])
 
+    # --- CREACIÓN INDIVIDUAL CON CAMPO "LINEA" ---
     with c_left:
         st.subheader("🆕 Crear Individual")
         with st.form("new_p_safe"):
             cod = st.text_input("Código")
             nom = st.text_input("Nombre")
+            lin = st.text_input("Línea (Ej: Rollon, Fragancia, Estuche)") # Campo añadido
             tip = st.selectbox("Tipo", ["Unidad", "Lote"])
             uds = st.number_input("Uds/Lote", 1)
             ciclo = st.number_input("Tiempo de ciclo (Minutos por unidad)", value=5.0, step=0.1)
@@ -452,19 +457,25 @@ with tabs[3]:
             
             if st.form_submit_button("💾 Guardar"):
                 run_query("""
-                    INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido) 
-                    VALUES (:c, :n, :t, :u, :m, :p)
+                    INSERT INTO productos (codigo_barras, nombre, linea, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido) 
+                    VALUES (:c, :n, :l, :t, :u, :m, :p)
                     ON CONFLICT (codigo_barras) DO UPDATE SET 
-                    nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
-                """, {'c':cod, 'n':nom, 't':tip, 'u':uds, 'm':ciclo, 'p':prc})
-                st.success(f"Producto {nom} guardado.")
+                    nombre=:n, linea=:l, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
+                """, {'c':cod, 'n':nom, 'l':lin, 't':tip, 'u':uds, 'm':ciclo, 'p':prc})
+                st.success(f"Producto {nom} guardado en línea {lin}.")
                 st.rerun()
 
+    # --- EDITOR DE RECETAS MOSTRANDO LINEA ---
     with c_right:
-        prods_list = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
+        prods_list = get_data("SELECT codigo_barras, nombre, linea FROM productos ORDER BY nombre")
         if not prods_list.empty:
-            sel_p = st.selectbox("Editar Receta de:", prods_list['nombre'].tolist())
-            pid = prods_list[prods_list['nombre']==sel_p]['codigo_barras'].values[0]
+            # Selector que muestra el nombre y la línea para evitar confusiones
+            sel_options = [f"{r['nombre']} | {r['linea']}" for _, r in prods_list.iterrows()]
+            sel_p = st.selectbox("Editar Receta de:", sel_options)
+            
+            # Extraer el nombre limpio para buscar el PID
+            p_nombre_clean = sel_p.split(" | ")[0]
+            pid = prods_list[prods_list['nombre']==p_nombre_clean]['codigo_barras'].values[0]
             
             mps_list = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
             unidades_db = get_data("SELECT DISTINCT unidad_medida FROM materias_primas WHERE unidad_medida IS NOT NULL")
@@ -473,7 +484,7 @@ with tabs[3]:
                 opciones_u.append("Nueva unidad...")
 
             with st.form("add_rec_f"):
-                st.subheader(f"🛠️ Editor: {sel_p}")
+                st.subheader(f"🛠️ Editor: {p_nombre_clean}")
                 c1, c2, c3 = st.columns([3,1,1])
                 m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
                 m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
@@ -493,7 +504,7 @@ with tabs[3]:
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
             st.dataframe(curr_rec, use_container_width=True, hide_index=True)
 
-            # --- BOTÓN VISTA PREVIA ---
+            # --- VISTA PREVIA ---
             if st.button("👁️ Vista Previa del Costo"):
                 with st.spinner("Calculando..."):
                     rec_p = get_data("SELECT r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
