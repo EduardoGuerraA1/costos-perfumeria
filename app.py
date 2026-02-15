@@ -578,7 +578,7 @@ with tabs[3]:
                     if st.button("Confirmar Eliminación", type="primary", key="btn_del_local"):
                         run_query("DELETE FROM recetas WHERE id = :rid", {"rid": dict_borrar[item_sel]})
                         st.rerun()
-# --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON SEMÁFORO DE MARGEN Y PDF) ---
+# --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON COSTOS REALES Y SEMÁFORO) ---
 with tabs[4]:
     st.header("🔎 Ficha Técnica de Costeo")
     prods_f = get_data("SELECT * FROM productos ORDER BY nombre")
@@ -595,7 +595,7 @@ with tabs[4]:
         
         st.markdown(f"### {p_info['nombre']}")
         
-        # Botón de Exportación (Placeholder para el formato PDF)
+        # Botón de Exportación
         if st.button("📥 Generar Reporte PDF"):
             st.info("Función de exportación PDF seleccionada. Preparando estructura de datos...")
 
@@ -625,9 +625,11 @@ with tabs[4]:
         
         st.divider()
 
-        # --- CÁLCULOS TÉCNICOS ---
+        # --- CÁLCULOS TÉCNICOS CON VOLUMEN REAL ---
         u_div = p_info['unidades_por_lote'] if p_info['tipo_produccion'] == 'Lote' else 1
-        u_prom_base = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
+        
+        # Llamada a la función dinámica para obtener volumen real vs teórico
+        u_volumen, tipo_vol = obtener_volumen_referencia()
         
         costo_variable_u = (tot_formula + tot_empaque) / u_div
         mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
@@ -637,11 +639,14 @@ with tabs[4]:
         
         tiempo_ciclo = float(p_info.get('minutos_por_unidad', 5.0)) 
         mod_u = tiempo_ciclo * costo_minuto
-        cif_tot = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
-        c_fijos_u = float(cif_tot) / u_prom_base
-        gasto_op_tot = get_data("SELECT SUM(total_mensual * ((p_admin + p_ventas)/100)) FROM costos_fijos").iloc[0,0] or 0
-        gasto_op_u = float(gasto_op_tot) / u_prom_base
         
+        cif_tot = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
+        c_fijos_u = float(cif_tot) / u_volumen
+        
+        gasto_op_tot = get_data("SELECT SUM(total_mensual * ((p_admin + p_ventas)/100)) FROM costos_fijos").iloc[0,0] or 0
+        gasto_op_u = float(gasto_op_tot) / u_volumen
+        
+        # --- TOTALES FINALES ---
         costo_total_u = costo_variable_u + mod_u + c_fijos_u
         total_costos_gastos = costo_total_u + gasto_op_u
         precio_venta = float(p_info['precio_venta_sugerido'])
@@ -650,6 +655,8 @@ with tabs[4]:
 
         # --- TABLA DE RESULTADOS ---
         st.subheader("📊 Desglose Final de Costos y Utilidad")
+        st.caption(f"ℹ️ Cálculos basados en volumen **{tipo_vol}**: {u_volumen:,.0f} unidades.")
+        
         res_cols = st.columns(2)
         with res_cols[0]:
             st.write(f"**COSTO VARIABLE UNITARIO:** Q{costo_variable_u:,.2f}")
@@ -665,22 +672,18 @@ with tabs[4]:
             
         st.divider()
         
-        # --- SEMÁFORO DE UTILIDAD Y MARGEN ---
-        # Lógica de color: Verde > 0, Rojo < 0, Amarillo = 0
+        # --- SEMÁFORO DE UTILIDAD ---
         if utilidad > 0.01:
             color_res = "green"
-            msj_res = "💰 GANANCIA"
-            st.success(f"**{msj_res} Detectada para este producto.**")
+            st.success(f"**💰 GANANCIA Detectada para este producto.**")
         elif utilidad < -0.01:
             color_res = "red"
-            msj_res = "⚠️ PÉRDIDA"
-            st.error(f"**{msj_res}: El costo total supera al precio de venta.**")
+            st.error(f"**⚠️ PÉRDIDA: El costo total supera al precio de venta.**")
         else:
             color_res = "gray"
-            msj_res = "⚖️ NEUTRAL"
-            st.warning("**PUNTO DE EQUILIBRIO: El producto no genera utilidad significativa.**")
+            st.warning("**⚖️ NEUTRAL: El producto está en punto de equilibrio.**")
 
-        # KPIs Visuales con colores dinámicos
+        # KPIs Visuales
         st.markdown(f"""
             <div style="display: flex; justify-content: space-around; padding: 10px; border-radius: 10px; background-color: #f0f2f6;">
                 <div style="text-align: center;">
@@ -695,7 +698,7 @@ with tabs[4]:
         """, unsafe_allow_html=True)
         
         st.write("")
-        st.metric("PUNTO DE EQUILIBRIO (Est.)", f"{int(total_costos_gastos / (precio_venta - costo_variable_u) * u_prom_base) if precio_venta > costo_variable_u else 0} uds")
+        st.metric("PUNTO DE EQUILIBRIO (Est.)", f"{int(total_costos_gastos / (precio_venta - costo_variable_u) * u_volumen) if precio_venta > costo_variable_u else 0} uds")
 # --- TAB 6: AJUSTES (CONVERSIONES) ---
 with tabs[5]:
     st.header("⚙️ Ajustes y Conversiones")
