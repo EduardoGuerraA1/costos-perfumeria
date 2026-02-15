@@ -401,9 +401,17 @@ with tabs[2]:
                 st.error(f"Error al sincronizar: {e}")
 
 # --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
+# --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
 with tabs[3]:
     st.header("Gestión de Producción")
     
+    # --- 1. RECUPERAR LÍNEAS OFICIALES ---
+    try:
+        df_lineas_oficiales = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
+        lista_lineas = df_lineas_oficiales['nombre'].tolist() if not df_lineas_oficiales.empty else ['General']
+    except:
+        lista_lineas = ['General']
+
     # --- VISUALIZACIÓN DE COSTO POR MINUTO ---
     try:
         mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
@@ -414,45 +422,49 @@ with tabs[3]:
     except:
         st.warning("Configure la nómina de producción para calcular el costo por minuto.")
     
-    # --- CARGA MASIVA CON COLUMNA "LINEA" ---
+    # --- CARGA MASIVA MEJORADA (Detección automática de separador) ---
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
+        st.write("Columnas requeridas: `codigo, nombre, tipo, unidades_lote, tiempo_ciclo, precio, linea`")
         with st.form("csv_p_f", clear_on_submit=True):
             f_p = st.file_uploader("Subir CSV Productos", type="csv")
             if st.form_submit_button("Procesar Productos") and f_p:
                 try:
-                    df_p = pd.read_csv(f_p)
+                    # sep=None con engine='python' detecta automáticamente si es coma o punto y coma
+                    df_p = pd.read_csv(f_p, sep=None, engine='python')
+                    
                     for _, r in df_p.iterrows():
+                        # Si la línea del CSV no existe en la DB, se crea automáticamente
+                        linea_csv = str(r['linea']).strip()
+                        run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': linea_csv})
+                        
                         run_query("""
                             INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido, linea)
                             VALUES (:c, :n, :t, :u, :m, :p, :l)
                             ON CONFLICT (codigo_barras) DO UPDATE SET 
                             nombre=:n, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p, linea=:l
                         """, {
-                            'c': str(r['codigo']), 
-                            'n': r['nombre'], 
-                            't': r['tipo'], 
-                            'u': r['unidades_lote'], 
-                            'm': float(r['tiempo_ciclo']),
-                            'p': r['precio'],
-                            'l': str(r['linea']) # Inyecta la línea desde el CSV
+                            'c': str(r['codigo']), 'n': r['nombre'], 't': r['tipo'], 
+                            'u': r['unidades_lote'], 'm': float(r['tiempo_ciclo']),
+                            'p': r['precio'], 'l': linea_csv
                         })
-                    st.success("Productos actualizados con éxito incluyendo clasificación por línea.")
+                    st.success("Productos actualizados con éxito.")
                     st.rerun()
                 except Exception as e: 
                     st.error(f"Error en el formato del CSV: {e}")
 
     c_left, c_right = st.columns([1, 2])
 
-    # --- CREACIÓN INDIVIDUAL CON CAMPO "LINEA" ---
+    # --- CREACIÓN INDIVIDUAL CON SELECTOR DE LÍNEA ---
     with c_left:
         st.subheader("🆕 Crear Individual")
         with st.form("new_p_safe"):
             cod = st.text_input("Código")
             nom = st.text_input("Nombre")
-            lin = st.text_input("Línea (Ej: Rollon, Fragancia, Estuche)") # Campo añadido
+            # Cambio de campo de texto a selector basado en el catálogo oficial
+            lin = st.selectbox("Línea de Producción", options=lista_lineas)
             tip = st.selectbox("Tipo", ["Unidad", "Lote"])
             uds = st.number_input("Uds/Lote", 1)
-            ciclo = st.number_input("Tiempo de ciclo (Minutos por unidad)", value=5.0, step=0.1)
+            ciclo = st.number_input("Tiempo de ciclo (Min por unidad)", value=5.0, step=0.1)
             prc = st.number_input("Precio Venta", 0.0)
             
             if st.form_submit_button("💾 Guardar"):
@@ -462,18 +474,24 @@ with tabs[3]:
                     ON CONFLICT (codigo_barras) DO UPDATE SET 
                     nombre=:n, linea=:l, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
                 """, {'c':cod, 'n':nom, 'l':lin, 't':tip, 'u':uds, 'm':ciclo, 'p':prc})
-                st.success(f"Producto {nom} guardado en línea {lin}.")
+                st.success(f"Producto {nom} guardado.")
                 st.rerun()
 
-    # --- EDITOR DE RECETAS MOSTRANDO LINEA ---
+        # --- GESTOR DE LÍNEAS (CREADOR RÁPIDO) ---
+        with st.expander("🛠️ Editor de Líneas"):
+            nueva_lin = st.text_input("Nombre de nueva línea")
+            if st.button("Añadir Línea"):
+                if nueva_lin:
+                    run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': nueva_lin})
+                    st.rerun()
+
+    # --- EDITOR DE RECETAS Y VISTA PREVIA ---
     with c_right:
         prods_list = get_data("SELECT codigo_barras, nombre, linea FROM productos ORDER BY nombre")
         if not prods_list.empty:
-            # Selector que muestra el nombre y la línea para evitar confusiones
             sel_options = [f"{r['nombre']} | {r['linea']}" for _, r in prods_list.iterrows()]
             sel_p = st.selectbox("Editar Receta de:", sel_options)
             
-            # Extraer el nombre limpio para buscar el PID
             p_nombre_clean = sel_p.split(" | ")[0]
             pid = prods_list[prods_list['nombre']==p_nombre_clean]['codigo_barras'].values[0]
             
@@ -489,7 +507,7 @@ with tabs[3]:
                 m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
                 m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
                 can = c2.number_input("Cant.", format="%.4f")
-                u_sel = c3.selectbox("Unidad", opciones_u, index=opciones_u.index(m_r['unidad_medida']) if m_r['unidad_medida'] in opciones_u else 0)
+                u_sel = c3.selectbox("Unidad Uso", opciones_u, index=opciones_u.index(m_r['unidad_medida']) if m_r['unidad_medida'] in opciones_u else 0)
                 nueva_u = st.text_input("Escribe la nueva unidad (solo si seleccionaste 'Nueva unidad...' arriba)", placeholder="Ej: Mililitros")
                 
                 if st.form_submit_button("➕ Añadir Ingrediente"):
@@ -504,7 +522,6 @@ with tabs[3]:
             curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
             st.dataframe(curr_rec, use_container_width=True, hide_index=True)
 
-            # --- VISTA PREVIA ---
             if st.button("👁️ Vista Previa del Costo"):
                 with st.spinner("Calculando..."):
                     rec_p = get_data("SELECT r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
@@ -520,7 +537,7 @@ with tabs[3]:
                 st.caption(f"Materiales: Q{(costo_mat/u_div):.2f} | MOD: Q{mod_p:.2f} | CIF: Q{cif_p:.2f}")
 
             if not curr_rec.empty:
-                with st.expander("🗑️ Quitar un ingrediente de esta receta"):
+                with st.expander("🗑️ Quitar un ingrediente"):
                     dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] for _, row in curr_rec.iterrows()}
                     item_sel = st.selectbox("Seleccione para eliminar:", options=list(dict_borrar.keys()), key="del_local")
                     if st.button("Confirmar Eliminación", type="primary", key="btn_del_local"):
