@@ -434,19 +434,11 @@ with tabs[2]:
                 st.rerun()
             except Exception as e:
                 st.error(f"Error al sincronizar: {e}")
-# --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
-# --- TAB 4: FÁBRICA (PRODUCTOS Y RECETAS) ---
+# --- TAB 4: FÁBRICA (PRODUCTOS, LÍNEAS Y RECETAS) ---
 with tabs[3]:
     st.header("Gestión de Producción")
     
-    # --- 1. RECUPERAR LÍNEAS OFICIALES ---
-    try:
-        df_lineas_oficiales = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
-        lista_lineas = df_lineas_oficiales['nombre'].tolist() if not df_lineas_oficiales.empty else ['General']
-    except:
-        lista_lineas = ['General']
-
-    # --- VISUALIZACIÓN DE COSTO POR MINUTO ---
+    # --- A. DATOS DE REFERENCIA ---
     try:
         mod_cfg = get_data("SELECT salario_base, p_prestaciones, num_operarios, horas_mes FROM config_mod WHERE id=1").iloc[0]
         t_mod_mensual = float(mod_cfg['salario_base'] * mod_cfg['num_operarios'] * (1 + mod_cfg['p_prestaciones']/100))
@@ -455,21 +447,49 @@ with tabs[3]:
         st.info(f"⏱️ **Costo de Mano de Obra por Minuto:** Q{costo_minuto:,.4f}")
     except:
         st.warning("Configure la nómina de producción para calcular el costo por minuto.")
-    
-    # --- CARGA MASIVA MEJORADA (Detección automática de separador) ---
+
+    # --- B. GESTOR DE LÍNEAS (CREAR Y BORRAR) ---
+    with st.expander("🛠️ Configurar Líneas de Producción"):
+        df_lineas_db = get_data("SELECT id, nombre FROM lineas_produccion ORDER BY nombre")
+        ed_lineas = st.data_editor(
+            df_lineas_db, 
+            num_rows="dynamic", 
+            key="ed_lineas_master_v3", 
+            disabled=["id"],
+            use_container_width=True
+        )
+        
+        if st.button("💾 Sincronizar Líneas"):
+            ids_antes = set(df_lineas_db['id'].tolist())
+            ids_ahora = set(ed_lineas['id'].dropna().tolist())
+            ids_a_borrar = ids_antes - ids_ahora
+            
+            # 1. Eliminar
+            for id_del in ids_a_borrar:
+                run_query("DELETE FROM lineas_produccion WHERE id = :id", {'id': id_del})
+            
+            # 2. Actualizar o Insertar
+            for _, r in ed_lineas.iterrows():
+                if pd.isna(r['id']): # Nueva
+                    run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': r['nombre']})
+                else: # Editar nombre existente
+                    run_query("UPDATE lineas_produccion SET nombre=:n WHERE id=:id", {'n': r['nombre'], 'id': r['id']})
+            st.success("Catálogo de líneas actualizado.")
+            st.rerun()
+
+    # --- C. CARGA MASIVA INTELIGENTE ---
     with st.expander("📂 Carga Masiva de Productos (CSV)"):
-        st.write("Columnas requeridas: `codigo, nombre, tipo, unidades_lote, tiempo_ciclo, precio, linea`")
+        st.caption("Columnas: codigo, nombre, tipo, unidades_lote, tiempo_ciclo, precio, linea")
         with st.form("csv_p_f", clear_on_submit=True):
-            f_p = st.file_uploader("Subir CSV Productos", type="csv")
-            if st.form_submit_button("Procesar Productos") and f_p:
+            f_p = st.file_uploader("Subir CSV", type="csv")
+            if st.form_submit_button("Procesar") and f_p:
                 try:
-                    # sep=None con engine='python' detecta automáticamente si es coma o punto y coma
                     df_p = pd.read_csv(f_p, sep=None, engine='python')
+                    df_p.columns = [c.strip().lower() for c in df_p.columns]
                     
                     for _, r in df_p.iterrows():
-                        # Si la línea del CSV no existe en la DB, se crea automáticamente
-                        linea_csv = str(r['linea']).strip()
-                        run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': linea_csv})
+                        l_csv = str(r['linea']).strip()
+                        run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': l_csv})
                         
                         run_query("""
                             INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido, linea)
@@ -479,103 +499,159 @@ with tabs[3]:
                         """, {
                             'c': str(r['codigo']), 'n': r['nombre'], 't': r['tipo'], 
                             'u': r['unidades_lote'], 'm': float(r['tiempo_ciclo']),
-                            'p': r['precio'], 'l': linea_csv
+                            'p': r['precio'], 'l': l_csv
                         })
-                    st.success("Productos actualizados con éxito.")
+                    st.success("Carga masiva completada.")
                     st.rerun()
                 except Exception as e: 
-                    st.error(f"Error en el formato del CSV: {e}")
+                    st.error(f"Error en CSV: {e}")
 
-    c_left, c_right = st.columns([1, 2])
+    # --- D. HERRAMIENTAS DE CLONACIÓN ---
+    with st.expander("©️ Herramientas de Clonación (Recetas y Variantes)"):
+        tab_clon1, tab_clon2 = st.tabs(["Crear Variante Nueva", "Copiar Receta a Existente"])
+        
+        prods_todos = get_data("SELECT codigo_barras, nombre FROM productos ORDER BY nombre")
+        lista_prods = [f"{r['nombre']} | {r['codigo_barras']}" for _, r in prods_todos.iterrows()] if not prods_todos.empty else []
 
-    # --- CREACIÓN INDIVIDUAL CON SELECTOR DE LÍNEA ---
+        # OPCIÓN 1: Crear producto NUEVO basado en uno existente
+        with tab_clon1:
+            st.write("Crea un producto **nuevo** copiando datos y receta de otro.")
+            if lista_prods:
+                c1, c2, c3 = st.columns(3)
+                origen_str = c1.selectbox("Basado en:", lista_prods, key="clon_src_new")
+                new_cod = c2.text_input("Nuevo Código", key="clon_cod_new")
+                new_nom = c3.text_input("Nuevo Nombre", key="clon_nom_new")
+                
+                if st.button("🚀 Crear Variante", type="primary"):
+                    try:
+                        cod_org = origen_str.split(" | ")[-1]
+                        base = get_data("SELECT * FROM productos WHERE codigo_barras=:c", {'c': cod_org}).iloc[0]
+                        
+                        # 1. Crear Producto
+                        run_query("""
+                            INSERT INTO productos (codigo_barras, nombre, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido, linea)
+                            VALUES (:c, :n, :t, :u, :m, :p, :l)
+                        """, {'c': new_cod, 'n': new_nom, 't': base['tipo_produccion'], 
+                              'u': base['unidades_por_lote'], 'm': base['minutos_por_unidad'], 
+                              'p': base['precio_venta_sugerido'], 'l': base['linea']})
+                        
+                        # 2. Copiar Receta
+                        rec_base = get_data("SELECT mp_id, cantidad, unidad_uso FROM recetas WHERE producto_id=:pid", {'pid': cod_org})
+                        for _, row in rec_base.iterrows():
+                            run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)",
+                                      {'pid': new_cod, 'mid': row['mp_id'], 'c': row['cantidad'], 'u': row['unidad_uso']})
+                        
+                        st.success(f"Variante creada: {new_nom}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        # OPCIÓN 2: Pegar receta a producto EXISTENTE
+        with tab_clon2:
+            st.write("Copia los ingredientes de un producto a otro que **ya existe** (sobrescribe la receta destino).")
+            if lista_prods:
+                col_a, col_b = st.columns(2)
+                p_origen = col_a.selectbox("Copiar receta DE:", lista_prods, key="clon_src_exist")
+                p_destino = col_b.selectbox("Pegar receta A:", lista_prods, key="clon_dst_exist")
+                
+                if st.button("⚠️ Sobrescribir Receta"):
+                    cod_org = p_origen.split(" | ")[-1]
+                    cod_dst = p_destino.split(" | ")[-1]
+                    
+                    if cod_org == cod_dst:
+                        st.error("El origen y destino no pueden ser el mismo.")
+                    else:
+                        # 1. Borrar receta anterior del destino
+                        run_query("DELETE FROM recetas WHERE producto_id = :pid", {'pid': cod_dst})
+                        
+                        # 2. Copiar nueva receta
+                        rec_base = get_data("SELECT mp_id, cantidad, unidad_uso FROM recetas WHERE producto_id=:pid", {'pid': cod_org})
+                        if not rec_base.empty:
+                            for _, row in rec_base.iterrows():
+                                run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)",
+                                          {'pid': cod_dst, 'mid': row['mp_id'], 'c': row['cantidad'], 'u': row['unidad_uso']})
+                            st.success("Receta copiada exitosamente.")
+                            st.rerun()
+                        else:
+                            st.warning("El producto origen no tiene receta.")
+
+    # --- E. EDITOR INDIVIDUAL Y RECETAS ---
+    st.divider()
+    c_left, c_right = st.columns([1, 1.5])
+    
+    # Columna Izquierda: Crear/Editar Producto
     with c_left:
-        st.subheader("🆕 Crear Individual")
+        st.subheader("🆕 Crear / Editar Info")
+        df_l = get_data("SELECT nombre FROM lineas_produccion ORDER BY nombre")
+        lista_l = df_l['nombre'].tolist() if not df_l.empty else ["General"]
+        
         with st.form("new_p_safe"):
-            cod = st.text_input("Código")
-            nom = st.text_input("Nombre")
-            # Cambio de campo de texto a selector basado en el catálogo oficial
-            lin = st.selectbox("Línea de Producción", options=lista_lineas)
+            cod = st.text_input("Código de Barras")
+            nom = st.text_input("Nombre del Producto")
+            lin = st.selectbox("Línea", lista_l)
             tip = st.selectbox("Tipo", ["Unidad", "Lote"])
-            uds = st.number_input("Uds/Lote", 1)
-            ciclo = st.number_input("Tiempo de ciclo (Min por unidad)", value=5.0, step=0.1)
-            prc = st.number_input("Precio Venta", 0.0)
+            uds = st.number_input("Unidades por Lote", 1)
+            ciclo = st.number_input("Minutos por Unidad", value=5.0)
+            prc = st.number_input("Precio Venta (Q)", 0.0)
             
-            if st.form_submit_button("💾 Guardar"):
+            if st.form_submit_button("💾 Guardar Datos"):
                 run_query("""
                     INSERT INTO productos (codigo_barras, nombre, linea, tipo_produccion, unidades_por_lote, minutos_por_unidad, precio_venta_sugerido) 
                     VALUES (:c, :n, :l, :t, :u, :m, :p)
                     ON CONFLICT (codigo_barras) DO UPDATE SET 
                     nombre=:n, linea=:l, tipo_produccion=:t, unidades_por_lote=:u, minutos_por_unidad=:m, precio_venta_sugerido=:p
                 """, {'c':cod, 'n':nom, 'l':lin, 't':tip, 'u':uds, 'm':ciclo, 'p':prc})
-                st.success(f"Producto {nom} guardado.")
+                st.success("Guardado.")
                 st.rerun()
 
-        # --- GESTOR DE LÍNEAS (CREADOR RÁPIDO) ---
-        with st.expander("🛠️ Editor de Líneas"):
-            nueva_lin = st.text_input("Nombre de nueva línea")
-            if st.button("Añadir Línea"):
-                if nueva_lin:
-                    run_query("INSERT INTO lineas_produccion (nombre) VALUES (:n) ON CONFLICT DO NOTHING", {'n': nueva_lin})
-                    st.rerun()
-
-    # --- EDITOR DE RECETAS Y VISTA PREVIA ---
+    # Columna Derecha: Editor de Recetas
     with c_right:
         prods_list = get_data("SELECT codigo_barras, nombre, linea FROM productos ORDER BY nombre")
         if not prods_list.empty:
-            sel_options = [f"{r['nombre']} | {r['linea']}" for _, r in prods_list.iterrows()]
-            sel_p = st.selectbox("Editar Receta de:", sel_options)
+            sel_str = st.selectbox("🛠️ Editar Receta de:", 
+                                   [f"{r['nombre']} | {r['linea']}" for _, r in prods_list.iterrows()])
             
-            p_nombre_clean = sel_p.split(" | ")[0]
-            pid = prods_list[prods_list['nombre']==p_nombre_clean]['codigo_barras'].values[0]
+            nom_sel = sel_str.split(" | ")[0]
+            pid = prods_list[prods_list['nombre'] == nom_sel]['codigo_barras'].values[0]
             
-            mps_list = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
-            unidades_db = get_data("SELECT DISTINCT unidad_medida FROM materias_primas WHERE unidad_medida IS NOT NULL")
-            opciones_u = unidades_db['unidad_medida'].tolist() if not unidades_db.empty else []
-            if "Nueva unidad..." not in opciones_u:
-                opciones_u.append("Nueva unidad...")
+            mps = get_data("SELECT id, nombre, unidad_medida FROM materias_primas ORDER BY nombre")
+            u_db = get_data("SELECT DISTINCT unidad_medida FROM materias_primas WHERE unidad_medida IS NOT NULL")
+            ops_u = u_db['unidad_medida'].tolist()
+            if "Nueva unidad..." not in ops_u: ops_u.append("Nueva unidad...")
 
             with st.form("add_rec_f"):
-                st.subheader(f"🛠️ Editor: {p_nombre_clean}")
-                c1, c2, c3 = st.columns([3,1,1])
-                m_n = c1.selectbox("MP", mps_list['nombre'].tolist())
-                m_r = mps_list[mps_list['nombre']==m_n].iloc[0]
+                c1, c2, c3 = st.columns([3, 1.2, 1.5])
+                m_n = c1.selectbox("Materia Prima", mps['nombre'].tolist())
+                m_dat = mps[mps['nombre']==m_n].iloc[0]
                 can = c2.number_input("Cant.", format="%.4f")
-                u_sel = c3.selectbox("Unidad Uso", opciones_u, index=opciones_u.index(m_r['unidad_medida']) if m_r['unidad_medida'] in opciones_u else 0)
-                nueva_u = st.text_input("Escribe la nueva unidad (solo si seleccionaste 'Nueva unidad...' arriba)", placeholder="Ej: Mililitros")
                 
-                if st.form_submit_button("➕ Añadir Ingrediente"):
-                    unidad_final = nueva_u if u_sel == "Nueva unidad..." else u_sel
-                    if u_sel == "Nueva unidad..." and not nueva_u:
-                        st.error("Por favor, escribe el nombre de la nueva unidad.")
-                    else:
-                        run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)", 
-                                  {'pid':pid, 'mid':int(m_r['id']), 'c':can, 'u':unidad_final})
-                        st.rerun()
+                idx_u = ops_u.index(m_dat['unidad_medida']) if m_dat['unidad_medida'] in ops_u else 0
+                u_sel = c3.selectbox("Unidad", ops_u, index=idx_u)
+                new_u_txt = st.text_input("Nueva unidad (si aplica):")
+                
+                if st.form_submit_button("➕ Agregar"):
+                    u_fin = new_u_txt if u_sel == "Nueva unidad..." else u_sel
+                    run_query("INSERT INTO recetas (producto_id, mp_id, cantidad, unidad_uso) VALUES (:pid, :mid, :c, :u)",
+                              {'pid': pid, 'mid': int(m_dat['id']), 'c': can, 'u': u_fin})
+                    st.rerun()
+
+            curr = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid': pid})
+            st.dataframe(curr, use_container_width=True, hide_index=True)
             
-            curr_rec = get_data("SELECT r.id, m.nombre, r.cantidad, r.unidad_uso FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-            st.dataframe(curr_rec, use_container_width=True, hide_index=True)
+            if st.button("👁️ Calcular Costo Rápido"):
+                # Cálculo rápido sin CIF (solo materiales)
+                cost_m = 0
+                for _, row in curr.iterrows():
+                    mp_id_val = mps[mps['nombre']==row['nombre']]['id'].values[0]
+                    cost_m += row['cantidad'] * obtener_costo_convertido(mp_id_val, row['unidad_uso'])
+                st.info(f"Costo Materiales Aprox: Q{cost_m:,.2f}")
 
-            if st.button("👁️ Vista Previa del Costo"):
-                with st.spinner("Calculando..."):
-                    rec_p = get_data("SELECT r.cantidad, r.unidad_uso, m.id as mid FROM recetas r JOIN materias_primas m ON r.mp_id=m.id WHERE r.producto_id=:pid", {'pid':pid})
-                    costo_mat = sum(row['cantidad'] * obtener_costo_convertido(row['mid'], row['unidad_uso']) for _, row in rec_p.iterrows())
-                    p_p = get_data("SELECT unidades_por_lote, tipo_produccion, minutos_por_unidad FROM productos WHERE codigo_barras=:pid", {'pid':pid}).iloc[0]
-                    u_div = p_p['unidades_por_lote'] if p_p['tipo_produccion'] == 'Lote' else 1
-                    mod_p = float(p_p['minutos_por_unidad']) * costo_minuto
-                    u_prom_p = get_data("SELECT unidades_promedio_mes FROM config_global WHERE id=1").iloc[0,0]
-                    cif_tot_p = get_data("SELECT SUM(total_mensual * (p_prod/100)) FROM costos_fijos").iloc[0,0] or 0
-                    cif_p = float(cif_tot_p) / u_prom_p if u_prom_p > 0 else 0
-                    total_p = (costo_mat / u_div) + mod_p + cif_p
-                st.success(f"**Costo Unitario Estimado: Q{total_p:,.2f}**")
-                st.caption(f"Materiales: Q{(costo_mat/u_div):.2f} | MOD: Q{mod_p:.2f} | CIF: Q{cif_p:.2f}")
-
-            if not curr_rec.empty:
-                with st.expander("🗑️ Quitar un ingrediente"):
-                    dict_borrar = {f"{row['nombre']} ({row['cantidad']} {row['unidad_uso']})": row['id'] for _, row in curr_rec.iterrows()}
-                    item_sel = st.selectbox("Seleccione para eliminar:", options=list(dict_borrar.keys()), key="del_local")
-                    if st.button("Confirmar Eliminación", type="primary", key="btn_del_local"):
-                        run_query("DELETE FROM recetas WHERE id = :rid", {"rid": dict_borrar[item_sel]})
+            if not curr.empty:
+                with st.expander("🗑️ Borrar Ingrediente"):
+                    del_dict = {f"{r['nombre']} ({r['cantidad']})": r['id'] for _, r in curr.iterrows()}
+                    sel_d = st.selectbox("Elige:", list(del_dict.keys()))
+                    if st.button("Confirmar Borrado"):
+                        run_query("DELETE FROM recetas WHERE id=:id", {'id': del_dict[sel_d]})
                         st.rerun()
 # --- TAB 5: FICHA TÉCNICA (ACTUALIZADA CON COSTOS REALES Y SEMÁFORO) ---
 with tabs[4]:
